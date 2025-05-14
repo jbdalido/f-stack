@@ -1,0 +1,73 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "rdma-core",
+    hdrs = glob(["**/*.h"]),
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "mlx5dv",
+    hdrs = [
+        "providers/mlx5/mlx5_api.h",
+        "providers/mlx5/mlx5dv.h",
+    ],
+    includes = ["."],
+    strip_include_prefix = "providers/mlx5",
+    include_prefix = "infiniband/",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":verbs",
+        ":kh_verbs",
+        ":mlx4dv",
+        ":mana",
+    ],
+)
+
+cc_library(
+    name = "mlx4dv",
+    hdrs = [
+        "providers/mlx4/mlx4dv.h",
+    ],
+    includes = ["."],
+    strip_include_prefix = "providers/mlx4",
+    include_prefix = "infiniband/",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "mana",
+    hdrs = [
+        "providers/mana/manadv.h",
+    ],
+    includes = ["."],
+    strip_include_prefix = "providers/mana",
+    include_prefix = "infiniband/",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "verbs",
+    hdrs = [
+        "libibverbs/verbs.h",
+        "libibverbs/verbs_api.h",
+        "libibverbs/tm_types.h",
+    ],
+    includes = ["."],
+    strip_include_prefix = "libibverbs/",
+    include_prefix = "infiniband/",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "kh_verbs",
+    hdrs = [
+        "kernel-headers/rdma/ib_user_ioctl_verbs.h",
+        "kernel-headers/rdma/mlx5_user_ioctl_verbs.h",
+    ],
+    includes = ["."],
+    strip_include_prefix = "kernel-headers/rdma/",
+    include_prefix = "infiniband/",
+    visibility = ["//visibility:public"],
+)

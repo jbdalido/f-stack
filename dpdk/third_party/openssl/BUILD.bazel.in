@@ -1,0 +1,23 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+genrule(
+    name = "openssl_configuration_h",
+    srcs = ["include/openssl/configuration.h.in"],
+    outs = ["include/openssl/configuration.h"],
+    cmd = """
+    sed -e 's/@BN_LLONG@/1/' \
+        -e 's/@SIXTY_FOUR_BIT_LONG@/1/' \
+        -e 's/@SIXTY_FOUR_BIT@/0/' \
+        -e 's/@THIRTY_TWO_BIT@/0/' \
+        -e 's/@rc4_int@/unsigned/' \
+        $(SRCS) > $(OUTS)
+    """,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "openssl",
+    hdrs = glob(["include/openssl/**/*.h"]) + [":openssl_configuration_h"],
+    includes = ["include/"],
+    visibility = ["//visibility:public"],
+)

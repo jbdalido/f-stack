@@ -1,0 +1,22 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "libbpf",
+    hdrs = glob(
+        include = ["src/**/*.h"],
+        exclude = ["src/libbpf.h"],
+    ),
+    includes = ["src"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "libbpf_path",
+    hdrs = glob(
+        include = ["src/libbpf.h","src/libbpf_common.h","src/libbpf_version.h","src/libbpf_legacy.h","src/bpf.h","src/bpf_helpers.h","src/bpf_endian.h"],
+    ),
+    strip_include_prefix = "src",
+    include_prefix = "bpf",
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)

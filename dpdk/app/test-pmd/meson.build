@@ -3,7 +3,6 @@
 
 # override default name to drop the hyphen
 name = 'testpmd'
-cflags += '-Wno-deprecated-declarations'
 sources = files(
         '5tswap.c',
         'cmdline.c',
@@ -15,6 +14,7 @@ sources = files(
         'config.c',
         'csumonly.c',
         'flowgen.c',
+        'hairpin.c',
         'icmpecho.c',
         'ieee1588fwd.c',
         'iofwd.c',

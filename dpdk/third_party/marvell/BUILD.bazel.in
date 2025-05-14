@@ -1,0 +1,17 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+genrule(
+    name = "mv_autogen_comp_flags",
+    srcs = ["src/include/env/mv_autogen_comp_flags.h.in"],
+    outs = ["mv_autogen_comp_flags.h"],
+    cmd = "sed -e 's|@PP2_BUILT_FLAG@|#define PP2_BUILT_FLAG 1|' -e 's|@NETA_BUILT_FLAG@|#define NETA_BUILT_FLAG 1|' -e 's|@DMA_ADDR_SIZE@|64|' $(SRCS) > $@",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "marvell",
+    hdrs = [":mv_autogen_comp_flags"] + glob(["src/include/**/*.h"]),  # Reference the genrule's output
+    includes = [".", "src/include"],
+    include_prefix = "env",             # Matches expected include path
+    visibility = ["//visibility:public"],
+)

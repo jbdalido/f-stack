@@ -1595,9 +1595,6 @@ process_openssl_auth_cmac(struct rte_mbuf *mbuf_src, uint8_t *dst, int offset,
 process_auth_final:
 	if (CMAC_Final(ctx, dst, (size_t *)&dstlen) != 1)
 		goto process_auth_err;
-
-	CMAC_CTX_cleanup(ctx);
-
 	return 0;
 
 process_auth_err:
@@ -2689,7 +2686,7 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 		struct openssl_asym_session *sess)
 {
 	struct rte_crypto_asym_op *op = cop->asym;
-	uint32_t pad = (op->rsa.padding.type);
+	uint32_t pad = sess->u.r.pad;
 	uint8_t *tmp;
 	size_t outlen = 0;
 	int ret = -1;
@@ -2806,9 +2803,15 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 			goto err_rsa;
 		}
 
-		if (EVP_PKEY_verify_recover(rsa_ctx, tmp, &outlen,
+		ret = EVP_PKEY_verify_recover(rsa_ctx, tmp, &outlen,
 				op->rsa.sign.data,
-				op->rsa.sign.length) <= 0) {
+				op->rsa.sign.length);
+		if (ret <= 0) {
+			/* OpenSSL RSA verification returns one on
+			 * successful verification, otherwise 0. Hence,
+			 * this enqueue operation should succeed even if
+			 * invalid signature has been requested in verify.
+			 */
 			OPENSSL_free(tmp);
 			goto err_rsa;
 		}
@@ -2837,6 +2840,45 @@ process_openssl_rsa_op_evp(struct rte_crypto_op *cop,
 err_rsa:
 	return ret;
 
+}
+
+static int
+process_openssl_ecfpm_op_evp(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	const EC_GROUP *ecgrp = sess->u.ec.group;
+	EC_POINT *ecpt = NULL;
+	BN_CTX *ctx = NULL;
+	BIGNUM *n = NULL;
+	int ret = -1;
+
+	n = BN_bin2bn((const unsigned char *)
+			cop->asym->ecpm.scalar.data,
+			cop->asym->ecpm.scalar.length,
+			BN_new());
+
+	ctx = BN_CTX_new();
+	if (!ctx)
+		goto err_ecfpm;
+
+	if (!EC_POINT_mul(ecgrp, ecpt, n, NULL, NULL, ctx))
+		goto err_ecfpm;
+
+	if (cop->asym->flags & RTE_CRYPTO_ASYM_FLAG_PUB_KEY_COMPRESSED) {
+		unsigned char *buf = cop->asym->ecpm.r.x.data;
+		size_t sz;
+
+		sz = EC_POINT_point2oct(ecgrp, ecpt, POINT_CONVERSION_COMPRESSED, buf, 0, ctx);
+		if (!sz)
+			goto err_ecfpm;
+
+		cop->asym->ecpm.r.x.length = sz;
+	}
+
+err_ecfpm:
+	BN_CTX_free(ctx);
+	BN_free(n);
+	return ret;
 }
 
 static int
@@ -3064,6 +3106,155 @@ err_sm2:
 	return ret;
 }
 
+static int
+process_openssl_eddsa_op_evp(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	static const char * const instance[] = {"Ed25519", "Ed25519ctx", "Ed25519ph",
+						"Ed448", "Ed448ph"};
+	EVP_PKEY_CTX *kctx = NULL, *sctx = NULL, *cctx = NULL;
+	const uint8_t curve_id = sess->u.eddsa.curve_id;
+	struct rte_crypto_asym_op *op = cop->asym;
+	OSSL_PARAM *params = sess->u.eddsa.params;
+	OSSL_PARAM_BLD *iparam_bld = NULL;
+	OSSL_PARAM *iparams = NULL;
+	uint8_t signbuf[128] = {0};
+	EVP_MD_CTX *md_ctx = NULL;
+	EVP_PKEY *pkey = NULL;
+	size_t signlen;
+	int ret = -1;
+
+	cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+
+	iparam_bld = OSSL_PARAM_BLD_new();
+	if (!iparam_bld)
+		goto err_eddsa;
+
+	if (op->eddsa.instance == RTE_CRYPTO_EDCURVE_25519CTX) {
+		OSSL_PARAM_BLD_push_octet_string(iparam_bld, "context-string",
+			op->eddsa.context.data, op->eddsa.context.length);
+
+	}
+
+	OSSL_PARAM_BLD_push_utf8_string(iparam_bld, "instance",
+		instance[op->eddsa.instance], strlen(instance[op->eddsa.instance]));
+
+	iparams = OSSL_PARAM_BLD_to_param(iparam_bld);
+	if (!iparams)
+		goto err_eddsa;
+
+	switch (op->eddsa.op_type) {
+	case RTE_CRYPTO_ASYM_OP_SIGN:
+		{
+			if (curve_id == RTE_CRYPTO_EC_GROUP_ED25519)
+				kctx = EVP_PKEY_CTX_new_from_name(NULL, "ED25519", NULL);
+			else
+				kctx = EVP_PKEY_CTX_new_from_name(NULL, "ED448", NULL);
+
+			if (kctx == NULL || EVP_PKEY_fromdata_init(kctx) <= 0 ||
+				EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_KEYPAIR, params) <= 0)
+				goto err_eddsa;
+
+			md_ctx = EVP_MD_CTX_new();
+			if (!md_ctx)
+				goto err_eddsa;
+
+			sctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!sctx)
+				goto err_eddsa;
+
+			EVP_MD_CTX_set_pkey_ctx(md_ctx, sctx);
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30300000L)
+			if (!EVP_DigestSignInit_ex(md_ctx, NULL, NULL, NULL, NULL, pkey, iparams))
+				goto err_eddsa;
+#else
+			if (op->eddsa.instance == RTE_CRYPTO_EDCURVE_25519 ||
+				op->eddsa.instance == RTE_CRYPTO_EDCURVE_448) {
+				if (!EVP_DigestSignInit(md_ctx, NULL, NULL, NULL, pkey))
+					goto err_eddsa;
+			} else
+				goto err_eddsa;
+#endif
+
+			if (!EVP_DigestSign(md_ctx, NULL, &signlen, op->eddsa.message.data,
+					op->eddsa.message.length))
+				goto err_eddsa;
+
+			if (signlen > RTE_DIM(signbuf))
+				goto err_eddsa;
+
+			if (!EVP_DigestSign(md_ctx, signbuf, &signlen, op->eddsa.message.data,
+					op->eddsa.message.length))
+				goto err_eddsa;
+
+			memcpy(op->eddsa.sign.data, &signbuf[0], signlen);
+			op->eddsa.sign.length = signlen;
+		}
+		break;
+	case RTE_CRYPTO_ASYM_OP_VERIFY:
+		{
+			if (curve_id == RTE_CRYPTO_EC_GROUP_ED25519)
+				kctx = EVP_PKEY_CTX_new_from_name(NULL, "ED25519", NULL);
+			else
+				kctx = EVP_PKEY_CTX_new_from_name(NULL, "ED448", NULL);
+
+			if (kctx == NULL || EVP_PKEY_fromdata_init(kctx) <= 0 ||
+				EVP_PKEY_fromdata(kctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0)
+				goto err_eddsa;
+
+			md_ctx = EVP_MD_CTX_new();
+			if (!md_ctx)
+				goto err_eddsa;
+
+			sctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+			if (!sctx)
+				goto err_eddsa;
+
+			EVP_MD_CTX_set_pkey_ctx(md_ctx, sctx);
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30300000L)
+			if (!EVP_DigestVerifyInit_ex(md_ctx, NULL, NULL, NULL, NULL, pkey, iparams))
+				goto err_eddsa;
+#else
+			if (op->eddsa.instance == RTE_CRYPTO_EDCURVE_25519 ||
+				op->eddsa.instance == RTE_CRYPTO_EDCURVE_448) {
+				if (!EVP_DigestVerifyInit(md_ctx, NULL, NULL, NULL, pkey))
+					goto err_eddsa;
+			} else
+				goto err_eddsa;
+#endif
+
+			signlen = op->eddsa.sign.length;
+			memcpy(&signbuf[0], op->eddsa.sign.data, op->eddsa.sign.length);
+
+			ret = EVP_DigestVerify(md_ctx, signbuf, signlen, op->eddsa.message.data,
+					op->eddsa.message.length);
+			if (ret == 0)
+				goto err_eddsa;
+		}
+		break;
+	default:
+		/* allow ops with invalid args to be pushed to
+		 * completion queue
+		 */
+		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		goto err_eddsa;
+	}
+
+	ret = 0;
+	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+err_eddsa:
+	OSSL_PARAM_BLD_free(iparam_bld);
+
+	EVP_PKEY_CTX_free(sctx);
+
+	EVP_PKEY_CTX_free(cctx);
+
+	EVP_PKEY_free(pkey);
+
+	return ret;
+}
 #else
 static int
 process_openssl_rsa_op(struct rte_crypto_op *cop,
@@ -3072,7 +3263,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 	int ret = 0;
 	struct rte_crypto_asym_op *op = cop->asym;
 	RSA *rsa = sess->u.r.rsa;
-	uint32_t pad = (op->rsa.padding.type);
+	uint32_t pad = sess->u.r.pad;
 	uint8_t *tmp;
 
 	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
@@ -3165,7 +3356,25 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 }
 
 static int
+process_openssl_ecfpm_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	RTE_SET_USED(cop);
+	RTE_SET_USED(sess);
+	return -ENOTSUP;
+}
+
+static int
 process_openssl_sm2_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	RTE_SET_USED(cop);
+	RTE_SET_USED(sess);
+	return -ENOTSUP;
+}
+
+static int
+process_openssl_eddsa_op(struct rte_crypto_op *cop,
 		struct openssl_asym_session *sess)
 {
 	RTE_SET_USED(cop);
@@ -3222,11 +3431,25 @@ process_asym_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 			op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 #endif
 		break;
+	case RTE_CRYPTO_ASYM_XFORM_ECFPM:
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+		retval = process_openssl_ecfpm_op_evp(op, sess);
+#else
+		retval = process_openssl_ecfpm_op(op, sess);
+#endif
+		break;
 	case RTE_CRYPTO_ASYM_XFORM_SM2:
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 		retval = process_openssl_sm2_op_evp(op, sess);
 #else
 		retval = process_openssl_sm2_op(op, sess);
+#endif
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_EDDSA:
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+		retval = process_openssl_eddsa_op_evp(op, sess);
+#else
+		retval = process_openssl_eddsa_op(op, sess);
 #endif
 		break;
 	default:

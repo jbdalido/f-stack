@@ -314,34 +314,6 @@ cn10k_nix_tx_steor_vec_data(const uint16_t flags)
 	return data;
 }
 
-static __rte_always_inline uint64_t
-cn10k_cpt_tx_steor_data(void)
-{
-	/* We have two CPT instructions per LMTLine */
-	const uint64_t dw_m1 = ROC_CN10K_TWO_CPT_INST_DW_M1;
-	uint64_t data;
-
-	/* This will be moved to addr area */
-	data = dw_m1 << 16;
-	data |= dw_m1 << 19;
-	data |= dw_m1 << 22;
-	data |= dw_m1 << 25;
-	data |= dw_m1 << 28;
-	data |= dw_m1 << 31;
-	data |= dw_m1 << 34;
-	data |= dw_m1 << 37;
-	data |= dw_m1 << 40;
-	data |= dw_m1 << 43;
-	data |= dw_m1 << 46;
-	data |= dw_m1 << 49;
-	data |= dw_m1 << 52;
-	data |= dw_m1 << 55;
-	data |= dw_m1 << 58;
-	data |= dw_m1 << 61;
-
-	return data;
-}
-
 static __rte_always_inline void
 cn10k_nix_tx_skeleton(struct cn10k_eth_txq *txq, uint64_t *cmd,
 		      const uint16_t flags, const uint16_t static_sz)
@@ -359,9 +331,15 @@ cn10k_nix_tx_skeleton(struct cn10k_eth_txq *txq, uint64_t *cmd,
 		else
 			cmd[2] = NIX_SUBDC_EXT << 60;
 		cmd[3] = 0;
-		cmd[4] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
+		if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+			cmd[4] = (NIX_SUBDC_SG << 60) | (NIX_SENDLDTYPE_LDWB << 58) | BIT_ULL(48);
+		else
+			cmd[4] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
 	} else {
-		cmd[2] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
+		if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+			cmd[2] = (NIX_SUBDC_SG << 60) | (NIX_SENDLDTYPE_LDWB << 58) | BIT_ULL(48);
+		else
+			cmd[2] = (NIX_SUBDC_SG << 60) | BIT_ULL(48);
 	}
 }
 
@@ -459,35 +437,6 @@ again:
 	if (!__atomic_compare_exchange_n(fc_sw, &val, newval, false, __ATOMIC_RELEASE,
 					 __ATOMIC_RELAXED))
 		goto again;
-}
-
-static __rte_always_inline void
-cn10k_nix_sec_steorl(uintptr_t io_addr, uint32_t lmt_id, uint8_t lnum,
-		     uint8_t loff, uint8_t shft)
-{
-	uint64_t data;
-	uintptr_t pa;
-
-	/* Check if there is any CPT instruction to submit */
-	if (!lnum && !loff)
-		return;
-
-	data = cn10k_cpt_tx_steor_data();
-	/* Update lmtline use for partial end line */
-	if (loff) {
-		data &= ~(0x7ULL << shft);
-		/* Update it to half full i.e 64B */
-		data |= (0x3UL << shft);
-	}
-
-	pa = io_addr | ((data >> 16) & 0x7) << 4;
-	data &= ~(0x7ULL << 16);
-	/* Update lines - 1 that contain valid data */
-	data |= ((uint64_t)(lnum + loff - 1)) << 12;
-	data |= (uint64_t)lmt_id;
-
-	/* STEOR */
-	roc_lmt_submit_steorl(data, pa);
 }
 
 #if defined(RTE_ARCH_ARM64)
@@ -598,7 +547,7 @@ cn10k_nix_prep_sec_vec(struct rte_mbuf *m, uint64x2_t *cmd0, uint64x2_t *cmd1,
 	tag = sa_base & 0xFFFFUL;
 	sa_base &= ~0xFFFFUL;
 	sa = (uintptr_t)roc_nix_inl_ot_ipsec_outb_sa(sa_base, sess_priv.sa_idx);
-	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
+	ucode_cmd[3] = (ROC_LEGACY_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
 	ucode_cmd[0] = (ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC << 48 | 1UL << 54 |
 			((uint64_t)sess_priv.chksum) << 32 | ((uint64_t)sess_priv.dec_ttl) << 34 |
 			pkt_len);
@@ -738,7 +687,7 @@ cn10k_nix_prep_sec(struct rte_mbuf *m, uint64_t *cmd, uintptr_t *nixtx_addr,
 	tag = sa_base & 0xFFFFUL;
 	sa_base &= ~0xFFFFUL;
 	sa = (uintptr_t)roc_nix_inl_ot_ipsec_outb_sa(sa_base, sess_priv.sa_idx);
-	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
+	ucode_cmd[3] = (ROC_LEGACY_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
 	ucode_cmd[0] = (ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC << 48 | 1UL << 54 |
 			((uint64_t)sess_priv.chksum) << 32 | ((uint64_t)sess_priv.dec_ttl) << 34 |
 			pkt_len);
@@ -1824,6 +1773,9 @@ cn10k_nix_prepare_tso(struct rte_mbuf *m, union nix_send_hdr_w1_u *w1,
 	w0->lso_mps = m->tso_segsz;
 	w0->lso_format = NIX_LSO_FORMAT_IDX_TSOV4 + !!(ol_flags & RTE_MBUF_F_TX_IPV6);
 	w1->ol4type = NIX_SENDL4TYPE_TCP_CKSUM;
+	w1->ol3type = ((!!(ol_flags & RTE_MBUF_F_TX_IPV4)) << 1) +
+		      ((!!(ol_flags & RTE_MBUF_F_TX_IPV6)) << 2) +
+		      !!(ol_flags & RTE_MBUF_F_TX_IP_CKSUM);
 
 	/* Handle tunnel tso */
 	if ((flags & NIX_TX_OFFLOAD_OL3_OL4_CSUM_F) &&
@@ -2267,7 +2219,11 @@ cn10k_nix_xmit_pkts_vector(void *tx_queue, uint64_t *ws,
 
 	senddesc01_w1 = vdupq_n_u64(0);
 	senddesc23_w1 = senddesc01_w1;
-	sgdesc01_w0 = vdupq_n_u64((NIX_SUBDC_SG << 60) | BIT_ULL(48));
+	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+		sgdesc01_w0 = vdupq_n_u64((NIX_SUBDC_SG << 60) | (NIX_SENDLDTYPE_LDWB << 58) |
+					  BIT_ULL(48));
+	else
+		sgdesc01_w0 = vdupq_n_u64((NIX_SUBDC_SG << 60) | BIT_ULL(48));
 	sgdesc23_w0 = sgdesc01_w0;
 
 	if (flags & NIX_TX_NEED_EXT_HDR) {
@@ -2524,7 +2480,7 @@ again:
 			 */
 			const uint8x16_t tbl = {
 				/* [0-15] = il4type:il3type */
-				0x04, /* none (IPv6 assumed) */
+				0x00, /* none */
 				0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6 assumed) */
 				0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6 assumed) */
 				0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6 assumed) */
@@ -2728,7 +2684,7 @@ again:
 			const uint8x16x2_t tbl = {{
 				{
 					/* [0-15] = il4type:il3type */
-					0x04, /* none (IPv6) */
+					0x00, /* none */
 					0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6) */
 					0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6) */
 					0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6) */
@@ -3665,5 +3621,13 @@ NIX_TX_FASTPATH_MODES
 			tx_queue, NULL, tx_pkts, pkts, cmd,                    \
 			(flags) | NIX_TX_MULTI_SEG_F);                         \
 	}
+
+uint16_t __rte_noinline __rte_hot cn10k_nix_xmit_pkts_all_offload(void *tx_queue,
+								  struct rte_mbuf **tx_pkts,
+								  uint16_t pkts);
+
+uint16_t __rte_noinline __rte_hot cn10k_nix_xmit_pkts_vec_all_offload(void *tx_queue,
+								      struct rte_mbuf **tx_pkts,
+								      uint16_t pkts);
 
 #endif /* __CN10K_TX_H__ */

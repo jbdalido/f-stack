@@ -15,15 +15,15 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <rte_bitops.h>
 #include <rte_common.h>
 #include <rte_config.h>
 #include <rte_eal_memconfig.h>
 #include <rte_fbarray.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define RTE_PGSIZE_4K   (1ULL << 12)
 #define RTE_PGSIZE_64K  (1ULL << 16)
@@ -46,7 +46,7 @@ extern "C" {
 /**
  * Physical memory segment descriptor.
  */
-struct rte_memseg {
+struct __rte_packed_begin rte_memseg {
 	rte_iova_t iova;            /**< Start IO address. */
 	union {
 		void *addr;         /**< Start virtual address. */
@@ -58,7 +58,7 @@ struct rte_memseg {
 	uint32_t nchannel;          /**< Number of channels. */
 	uint32_t nrank;             /**< Number of ranks. */
 	uint32_t flags;             /**< Memseg-specific flags */
-} __rte_packed;
+} __rte_packed_end;
 
 /**
  * memseg list is a special case as we need to store a bunch of other data

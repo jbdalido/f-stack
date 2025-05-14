@@ -5,9 +5,9 @@
 #ifndef HNS3_RXTX_VEC_NEON_H
 #define HNS3_RXTX_VEC_NEON_H
 
-#include <arm_neon.h>
+#include <rte_bitops.h>
 
-#pragma GCC diagnostic ignored "-Wcast-qual"
+#include <arm_neon.h>
 
 static inline void
 hns3_vec_tx(volatile struct hns3_desc *desc, struct rte_mbuf *pkt)
@@ -20,8 +20,8 @@ hns3_vec_tx(volatile struct hns3_desc *desc, struct rte_mbuf *pkt)
 		0,
 		((uint64_t)HNS3_TXD_DEFAULT_VLD_FE_BDTYPE) << HNS3_UINT32_BIT
 	};
-	vst1q_u64((uint64_t *)&desc->addr, val1);
-	vst1q_u64((uint64_t *)&desc->tx.outer_vlan_tag, val2);
+	vst1q_u64(RTE_CAST_PTR(uint64_t *, &desc->addr), val1);
+	vst1q_u64(RTE_CAST_PTR(uint64_t *, &desc->tx.outer_vlan_tag), val2);
 }
 
 static uint16_t
@@ -189,7 +189,7 @@ hns3_recv_burst_vec(struct hns3_rx_queue *__restrict rxq,
 		if (likely(stat == 0))
 			bd_valid_num = HNS3_DEFAULT_DESCS_PER_LOOP;
 		else
-			bd_valid_num = __builtin_ctzl(stat) / HNS3_UINT16_BIT;
+			bd_valid_num = rte_ctz64(stat) / HNS3_UINT16_BIT;
 		if (bd_valid_num == 0)
 			break;
 

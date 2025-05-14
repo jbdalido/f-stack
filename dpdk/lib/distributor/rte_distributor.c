@@ -2,10 +2,12 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/queue.h>
 #include <string.h>
+#include <eal_export.h>
 #include <rte_mbuf.h>
 #include <rte_cycles.h>
 #include <rte_memzone.h>
@@ -30,6 +32,7 @@ EAL_REGISTER_TAILQ(rte_dist_burst_tailq)
 
 /**** Burst Packet APIs called by workers ****/
 
+RTE_EXPORT_SYMBOL(rte_distributor_request_pkt)
 void
 rte_distributor_request_pkt(struct rte_distributor *d,
 		unsigned int worker_id, struct rte_mbuf **oldpkt,
@@ -82,6 +85,7 @@ rte_distributor_request_pkt(struct rte_distributor *d,
 			rte_memory_order_release);
 }
 
+RTE_EXPORT_SYMBOL(rte_distributor_poll_pkt)
 int
 rte_distributor_poll_pkt(struct rte_distributor *d,
 		unsigned int worker_id, struct rte_mbuf **pkts)
@@ -126,6 +130,7 @@ rte_distributor_poll_pkt(struct rte_distributor *d,
 	return count;
 }
 
+RTE_EXPORT_SYMBOL(rte_distributor_get_pkt)
 int
 rte_distributor_get_pkt(struct rte_distributor *d,
 		unsigned int worker_id, struct rte_mbuf **pkts,
@@ -156,6 +161,7 @@ rte_distributor_get_pkt(struct rte_distributor *d,
 	return count;
 }
 
+RTE_EXPORT_SYMBOL(rte_distributor_return_pkt)
 int
 rte_distributor_return_pkt(struct rte_distributor *d,
 		unsigned int worker_id, struct rte_mbuf **oldpkt, int num)
@@ -187,7 +193,7 @@ rte_distributor_return_pkt(struct rte_distributor *d,
 	}
 
 	/* Sync with distributor to acquire retptrs */
-	__atomic_thread_fence(rte_memory_order_acquire);
+	rte_atomic_thread_fence(rte_memory_order_acquire);
 	for (i = 0; i < RTE_DIST_BURST_SIZE; i++)
 		/* Switch off the return bit first */
 		buf->retptr64[i] = 0;
@@ -438,6 +444,7 @@ release(struct rte_distributor *d, unsigned int wkr)
 
 
 /* process a set of packets to distribute them to workers */
+RTE_EXPORT_SYMBOL(rte_distributor_process)
 int
 rte_distributor_process(struct rte_distributor *d,
 		struct rte_mbuf **mbufs, unsigned int num_mbufs)
@@ -447,7 +454,7 @@ rte_distributor_process(struct rte_distributor *d,
 	struct rte_mbuf *next_mb = NULL;
 	int64_t next_value = 0;
 	uint16_t new_tag = 0;
-	uint16_t flows[RTE_DIST_BURST_SIZE] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint16_t flows[RTE_DIST_BURST_SIZE];
 	unsigned int i, j, w, wid, matching_required;
 
 	if (d->alg_type == RTE_DIST_ALG_SINGLE) {
@@ -477,7 +484,7 @@ rte_distributor_process(struct rte_distributor *d,
 		return 0;
 
 	while (next_idx < num_mbufs) {
-		uint16_t matches[RTE_DIST_BURST_SIZE] __rte_aligned(128);
+		alignas(128) uint16_t matches[RTE_DIST_BURST_SIZE];
 		unsigned int pkts;
 
 		if ((num_mbufs - next_idx) < RTE_DIST_BURST_SIZE)
@@ -608,6 +615,7 @@ rte_distributor_process(struct rte_distributor *d,
 }
 
 /* return to the caller, packets returned from workers */
+RTE_EXPORT_SYMBOL(rte_distributor_returned_pkts)
 int
 rte_distributor_returned_pkts(struct rte_distributor *d,
 		struct rte_mbuf **mbufs, unsigned int max_mbufs)
@@ -654,6 +662,7 @@ total_outstanding(const struct rte_distributor *d)
  * Flush the distributor, so that there are no outstanding packets in flight or
  * queued up.
  */
+RTE_EXPORT_SYMBOL(rte_distributor_flush)
 int
 rte_distributor_flush(struct rte_distributor *d)
 {
@@ -686,6 +695,7 @@ rte_distributor_flush(struct rte_distributor *d)
 }
 
 /* clears the internal returns array in the distributor */
+RTE_EXPORT_SYMBOL(rte_distributor_clear_returns)
 void
 rte_distributor_clear_returns(struct rte_distributor *d)
 {
@@ -707,6 +717,7 @@ rte_distributor_clear_returns(struct rte_distributor *d)
 }
 
 /* creates a distributor instance */
+RTE_EXPORT_SYMBOL(rte_distributor_create)
 struct rte_distributor *
 rte_distributor_create(const char *name,
 		unsigned int socket_id,

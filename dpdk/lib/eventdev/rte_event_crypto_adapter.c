@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <eal_export.h>
 #include <rte_common.h>
 #include <dev_driver.h>
 #include <rte_errno.h>
@@ -42,7 +43,7 @@
 
 #define ECA_ADAPTER_ARRAY "crypto_adapter_array"
 
-struct crypto_ops_circular_buffer {
+struct __rte_cache_aligned crypto_ops_circular_buffer {
 	/* index of head element in circular buffer */
 	uint16_t head;
 	/* index of tail element in circular buffer */
@@ -53,9 +54,9 @@ struct crypto_ops_circular_buffer {
 	uint16_t size;
 	/* Pointer to hold rte_crypto_ops for batching */
 	struct rte_crypto_op **op_buffer;
-} __rte_cache_aligned;
+};
 
-struct event_crypto_adapter {
+struct __rte_cache_aligned event_crypto_adapter {
 	/* Event device identifier */
 	uint8_t eventdev_id;
 	/* Event port identifier */
@@ -98,10 +99,10 @@ struct event_crypto_adapter {
 	uint16_t nb_qps;
 	/* Adapter mode */
 	enum rte_event_crypto_adapter_mode mode;
-} __rte_cache_aligned;
+};
 
 /* Per crypto device information */
-struct crypto_device_info {
+struct __rte_cache_aligned crypto_device_info {
 	/* Pointer to cryptodev */
 	struct rte_cryptodev *dev;
 	/* Pointer to queue pair info */
@@ -118,15 +119,15 @@ struct crypto_device_info {
 	 * be invoked if not already invoked
 	 */
 	uint16_t num_qpairs;
-} __rte_cache_aligned;
+};
 
 /* Per queue pair information */
-struct crypto_queue_pair_info {
+struct __rte_cache_aligned crypto_queue_pair_info {
 	/* Set to indicate queue pair is enabled */
 	bool qp_enabled;
 	/* Circular buffer for batching crypto ops to cdev */
 	struct crypto_ops_circular_buffer cbuf;
-} __rte_cache_aligned;
+};
 
 static struct event_crypto_adapter **event_crypto_adapter;
 
@@ -151,7 +152,7 @@ eca_dynfield_register(void)
 	static const struct rte_mbuf_dynfield eca_dynfield_desc = {
 		.name = ECA_DYNFIELD_NAME,
 		.size = sizeof(eca_dynfield_t),
-		.align = __alignof__(eca_dynfield_t),
+		.align = alignof(eca_dynfield_t),
 		.flags = 0,
 	};
 
@@ -362,6 +363,7 @@ eca_default_config_cb(uint8_t id, uint8_t dev_id,
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_create_ext)
 int
 rte_event_crypto_adapter_create_ext(uint8_t id, uint8_t dev_id,
 				rte_event_crypto_adapter_conf_cb conf_cb,
@@ -437,6 +439,7 @@ rte_event_crypto_adapter_create_ext(uint8_t id, uint8_t dev_id,
 }
 
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_create)
 int
 rte_event_crypto_adapter_create(uint8_t id, uint8_t dev_id,
 				struct rte_event_port_conf *port_config,
@@ -465,6 +468,7 @@ rte_event_crypto_adapter_create(uint8_t id, uint8_t dev_id,
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_free)
 int
 rte_event_crypto_adapter_free(uint8_t id)
 {
@@ -1036,6 +1040,7 @@ eca_add_queue_pair(struct event_crypto_adapter *adapter, uint8_t cdev_id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_queue_pair_add)
 int
 rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 			uint8_t cdev_id,
@@ -1132,7 +1137,7 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW) ||
 	    (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW &&
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW)) {
-		if (*dev->dev_ops->crypto_adapter_queue_pair_add == NULL)
+		if (dev->dev_ops->crypto_adapter_queue_pair_add == NULL)
 			return -ENOTSUP;
 		if (dev_info->qpairs == NULL) {
 			dev_info->qpairs =
@@ -1144,10 +1149,8 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 				return -ENOMEM;
 		}
 
-		ret = (*dev->dev_ops->crypto_adapter_queue_pair_add)(dev,
-				dev_info->dev,
-				queue_pair_id,
-				conf);
+		ret = dev->dev_ops->crypto_adapter_queue_pair_add(dev, dev_info->dev,
+								  queue_pair_id, conf);
 		if (ret)
 			return ret;
 
@@ -1192,6 +1195,7 @@ rte_event_crypto_adapter_queue_pair_add(uint8_t id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_queue_pair_del)
 int
 rte_event_crypto_adapter_queue_pair_del(uint8_t id, uint8_t cdev_id,
 					int32_t queue_pair_id)
@@ -1233,11 +1237,10 @@ rte_event_crypto_adapter_queue_pair_del(uint8_t id, uint8_t cdev_id,
 	if ((cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) ||
 	    (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW &&
 	     adapter->mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW)) {
-		if (*dev->dev_ops->crypto_adapter_queue_pair_del == NULL)
+		if (dev->dev_ops->crypto_adapter_queue_pair_del == NULL)
 			return -ENOTSUP;
-		ret = (*dev->dev_ops->crypto_adapter_queue_pair_del)(dev,
-						dev_info->dev,
-						queue_pair_id);
+		ret = dev->dev_ops->crypto_adapter_queue_pair_del(dev,
+							  dev_info->dev, queue_pair_id);
 		if (ret == 0) {
 			eca_update_qp_info(adapter,
 					&adapter->cdevs[cdev_id],
@@ -1308,10 +1311,8 @@ eca_adapter_ctrl(uint8_t id, int start)
 		dev_info->dev_started = start;
 		if (dev_info->internal_event_port == 0)
 			continue;
-		start ? (*dev->dev_ops->crypto_adapter_start)(dev,
-						&dev_info->dev[i]) :
-			(*dev->dev_ops->crypto_adapter_stop)(dev,
-						&dev_info->dev[i]);
+		start ? dev->dev_ops->crypto_adapter_start(dev, &dev_info->dev[i]) :
+			dev->dev_ops->crypto_adapter_stop(dev, &dev_info->dev[i]);
 	}
 
 	if (use_service)
@@ -1320,6 +1321,7 @@ eca_adapter_ctrl(uint8_t id, int start)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_start)
 int
 rte_event_crypto_adapter_start(uint8_t id)
 {
@@ -1334,6 +1336,7 @@ rte_event_crypto_adapter_start(uint8_t id)
 	return eca_adapter_ctrl(id, 1);
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_stop)
 int
 rte_event_crypto_adapter_stop(uint8_t id)
 {
@@ -1341,6 +1344,7 @@ rte_event_crypto_adapter_stop(uint8_t id)
 	return eca_adapter_ctrl(id, 0);
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_stats_get)
 int
 rte_event_crypto_adapter_stats_get(uint8_t id,
 				struct rte_event_crypto_adapter_stats *stats)
@@ -1367,11 +1371,9 @@ rte_event_crypto_adapter_stats_get(uint8_t id,
 	for (i = 0; i < rte_cryptodev_count(); i++) {
 		dev_info = &adapter->cdevs[i];
 		if (dev_info->internal_event_port == 0 ||
-			dev->dev_ops->crypto_adapter_stats_get == NULL)
+		    dev->dev_ops->crypto_adapter_stats_get == NULL)
 			continue;
-		ret = (*dev->dev_ops->crypto_adapter_stats_get)(dev,
-						dev_info->dev,
-						&dev_stats);
+		ret = dev->dev_ops->crypto_adapter_stats_get(dev, dev_info->dev, &dev_stats);
 		if (ret)
 			continue;
 
@@ -1395,6 +1397,7 @@ rte_event_crypto_adapter_stats_get(uint8_t id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_stats_reset)
 int
 rte_event_crypto_adapter_stats_reset(uint8_t id)
 {
@@ -1418,16 +1421,16 @@ rte_event_crypto_adapter_stats_reset(uint8_t id)
 	for (i = 0; i < rte_cryptodev_count(); i++) {
 		dev_info = &adapter->cdevs[i];
 		if (dev_info->internal_event_port == 0 ||
-			dev->dev_ops->crypto_adapter_stats_reset == NULL)
+		    dev->dev_ops->crypto_adapter_stats_reset == NULL)
 			continue;
-		(*dev->dev_ops->crypto_adapter_stats_reset)(dev,
-						dev_info->dev);
+		dev->dev_ops->crypto_adapter_stats_reset(dev, dev_info->dev);
 	}
 
 	memset(&adapter->crypto_stats, 0, sizeof(adapter->crypto_stats));
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_event_crypto_adapter_runtime_params_init, 23.03)
 int
 rte_event_crypto_adapter_runtime_params_init(
 		struct rte_event_crypto_adapter_runtime_params *params)
@@ -1466,6 +1469,7 @@ crypto_adapter_cap_check(struct event_crypto_adapter *adapter)
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_event_crypto_adapter_runtime_params_set, 23.03)
 int
 rte_event_crypto_adapter_runtime_params_set(uint8_t id,
 		struct rte_event_crypto_adapter_runtime_params *params)
@@ -1498,6 +1502,7 @@ rte_event_crypto_adapter_runtime_params_set(uint8_t id,
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_event_crypto_adapter_runtime_params_get, 23.03)
 int
 rte_event_crypto_adapter_runtime_params_get(uint8_t id,
 		struct rte_event_crypto_adapter_runtime_params *params)
@@ -1529,6 +1534,7 @@ rte_event_crypto_adapter_runtime_params_get(uint8_t id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_service_id_get)
 int
 rte_event_crypto_adapter_service_id_get(uint8_t id, uint32_t *service_id)
 {
@@ -1548,6 +1554,7 @@ rte_event_crypto_adapter_service_id_get(uint8_t id, uint32_t *service_id)
 	return adapter->service_inited ? 0 : -ESRCH;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_event_port_get)
 int
 rte_event_crypto_adapter_event_port_get(uint8_t id, uint8_t *event_port_id)
 {
@@ -1566,6 +1573,7 @@ rte_event_crypto_adapter_event_port_get(uint8_t id, uint8_t *event_port_id)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_crypto_adapter_vector_limits_get)
 int
 rte_event_crypto_adapter_vector_limits_get(
 	uint8_t dev_id, uint16_t cdev_id,
@@ -1606,9 +1614,8 @@ rte_event_crypto_adapter_vector_limits_get(
 		return -ENOTSUP;
 	}
 
-	if ((*dev->dev_ops->crypto_adapter_vector_limits_get) == NULL)
+	if (dev->dev_ops->crypto_adapter_vector_limits_get == NULL)
 		return -ENOTSUP;
 
-	return dev->dev_ops->crypto_adapter_vector_limits_get(
-		dev, cdev, limits);
+	return dev->dev_ops->crypto_adapter_vector_limits_get(dev, cdev, limits);
 }

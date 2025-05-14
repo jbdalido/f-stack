@@ -13,7 +13,8 @@ optimized libraries to appear as virtual bbdev devices.
 The functional scope of the BBDEV library are those functions in relation to
 the 3GPP Layer 1 signal processing (channel coding, modulation, ...).
 
-The framework currently only supports FEC function.
+The framework currently supports FEC functions (5G/4G encoder/decoder),
+as well as FFT and MLD-TS.
 
 
 Design Principles
@@ -1020,6 +1021,8 @@ The LDPC decode parameters are set out in the table below.
 |                |ea          |Ea, length of the RM output sequence in bits, r < cab  |
 +----------------+------------+-------------------------------------------------------+
 |                |eb          |Eb, length of the RM output sequence in bits  r >= cab |
++----------------+------------+-------------------------------------------------------+
+|                |k0          |Optional k0 Rate matching starting position override   |
 +----------------+------------+-------------------------------------------------------+
 
 The mbuf input ``input`` encoded CB data is mandatory for all BBDEV PMDs

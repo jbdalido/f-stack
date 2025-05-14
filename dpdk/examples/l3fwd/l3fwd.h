@@ -23,10 +23,11 @@
 #define RX_DESC_DEFAULT 1024
 #define TX_DESC_DEFAULT 1024
 
-#define MAX_PKT_BURST     32
+#define DEFAULT_PKT_BURST 32
+#define MAX_PKT_BURST 512
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
-#define MEMPOOL_CACHE_SIZE 256
+#define MEMPOOL_CACHE_SIZE RTE_MEMPOOL_CACHE_MAX_SIZE
 #define MAX_RX_QUEUE_PER_LCORE 16
 
 #define VECTOR_SIZE_DEFAULT   MAX_PKT_BURST
@@ -72,12 +73,12 @@ struct mbuf_table {
 	struct rte_mbuf *m_table[MAX_PKT_BURST];
 };
 
-struct lcore_rx_queue {
+struct __rte_cache_aligned lcore_rx_queue {
 	uint16_t port_id;
 	uint16_t queue_id;
-} __rte_cache_aligned;
+};
 
-struct lcore_conf {
+struct __rte_cache_aligned lcore_conf {
 	uint16_t n_rx_queue;
 	struct lcore_rx_queue rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
 	uint16_t n_tx_port;
@@ -86,7 +87,7 @@ struct lcore_conf {
 	struct mbuf_table tx_mbufs[RTE_MAX_ETHPORTS];
 	void *ipv4_lookup_struct;
 	void *ipv6_lookup_struct;
-} __rte_cache_aligned;
+};
 
 extern volatile bool force_quit;
 
@@ -114,6 +115,9 @@ extern struct parm_cfg parm_config;
 extern struct acl_algorithms acl_alg[];
 
 extern uint32_t max_pkt_len;
+
+extern uint32_t nb_pkt_per_burst;
+extern uint32_t mb_mempool_cache_size;
 
 /* Send burst of packets on an output interface */
 static inline int

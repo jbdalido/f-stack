@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include <eal_export.h>
 #include <rte_common.h>
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
@@ -12,21 +13,27 @@
 
 #include "rte_pipeline.h"
 
+RTE_LOG_REGISTER_DEFAULT(pipeline_logtype, INFO);
+#define RTE_LOGTYPE_PIPELINE pipeline_logtype
+
+#define PIPELINE_LOG(level, ...) \
+	RTE_LOG_LINE(level, PIPELINE, "" __VA_ARGS__)
+
 #define RTE_TABLE_INVALID                                 UINT32_MAX
 
 #ifdef RTE_PIPELINE_STATS_COLLECT
 
 #define RTE_PIPELINE_STATS_AH_DROP_WRITE(p, mask)			\
-	({ (p)->n_pkts_ah_drop = rte_popcount64(mask); })
+	__extension__ ({ (p)->n_pkts_ah_drop = rte_popcount64(mask); })
 
 #define RTE_PIPELINE_STATS_AH_DROP_READ(p, counter)			\
-	({ (counter) += (p)->n_pkts_ah_drop; (p)->n_pkts_ah_drop = 0; })
+	__extension__ ({ (counter) += (p)->n_pkts_ah_drop; (p)->n_pkts_ah_drop = 0; })
 
 #define RTE_PIPELINE_STATS_TABLE_DROP0(p)				\
-	({ (p)->pkts_drop_mask = (p)->action_mask0[RTE_PIPELINE_ACTION_DROP]; })
+	__extension__ ({ (p)->pkts_drop_mask = (p)->action_mask0[RTE_PIPELINE_ACTION_DROP]; })
 
 #define RTE_PIPELINE_STATS_TABLE_DROP1(p, counter)			\
-({									\
+__extension__ ({							\
 	uint64_t mask = (p)->action_mask0[RTE_PIPELINE_ACTION_DROP];	\
 	mask ^= (p)->pkts_drop_mask;					\
 	(counter) += rte_popcount64(mask);			\
@@ -98,7 +105,7 @@ struct rte_table {
 
 #define RTE_PIPELINE_MAX_NAME_SZ                           124
 
-struct rte_pipeline {
+struct __rte_cache_aligned rte_pipeline {
 	/* Input parameters */
 	char name[RTE_PIPELINE_MAX_NAME_SZ];
 	int socket_id;
@@ -126,7 +133,7 @@ struct rte_pipeline {
 	uint64_t pkts_mask;
 	uint64_t n_pkts_ah_drop;
 	uint64_t pkts_drop_mask;
-} __rte_cache_aligned;
+};
 
 static inline uint32_t
 rte_mask_get_next(uint64_t mask, uint32_t pos)
@@ -160,22 +167,22 @@ static int
 rte_pipeline_check_params(struct rte_pipeline_params *params)
 {
 	if (params == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Incorrect value for parameter params\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Incorrect value for parameter params", __func__);
 		return -EINVAL;
 	}
 
 	/* name */
 	if (params->name == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Incorrect value for parameter name\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Incorrect value for parameter name", __func__);
 		return -EINVAL;
 	}
 
 	/* socket */
 	if (params->socket_id < 0) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Incorrect value for parameter socket_id\n",
+		PIPELINE_LOG(ERR,
+			"%s: Incorrect value for parameter socket_id",
 			__func__);
 		return -EINVAL;
 	}
@@ -183,6 +190,7 @@ rte_pipeline_check_params(struct rte_pipeline_params *params)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_create)
 struct rte_pipeline *
 rte_pipeline_create(struct rte_pipeline_params *params)
 {
@@ -192,8 +200,8 @@ rte_pipeline_create(struct rte_pipeline_params *params)
 	/* Check input parameters */
 	status = rte_pipeline_check_params(params);
 	if (status != 0) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Pipeline params check failed (%d)\n",
+		PIPELINE_LOG(ERR,
+			"%s: Pipeline params check failed (%d)",
 			__func__, status);
 		return NULL;
 	}
@@ -203,8 +211,8 @@ rte_pipeline_create(struct rte_pipeline_params *params)
 			RTE_CACHE_LINE_SIZE, params->socket_id);
 
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Pipeline memory allocation failed\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Pipeline memory allocation failed", __func__);
 		return NULL;
 	}
 
@@ -225,6 +233,7 @@ rte_pipeline_create(struct rte_pipeline_params *params)
 	return p;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_free)
 int
 rte_pipeline_free(struct rte_pipeline *p)
 {
@@ -232,8 +241,8 @@ rte_pipeline_free(struct rte_pipeline *p)
 
 	/* Check input parameters */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: rte_pipeline parameter is NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: rte_pipeline parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -273,44 +282,44 @@ rte_table_check_params(struct rte_pipeline *p,
 		uint32_t *table_id)
 {
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 	if (params == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: params parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 	if (table_id == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: table_id parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: table_id parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	/* ops */
 	if (params->ops == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params->ops is NULL\n",
+		PIPELINE_LOG(ERR, "%s: params->ops is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_create == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_create function pointer is NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_create function pointer is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_lookup == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_lookup function pointer is NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_lookup function pointer is NULL", __func__);
 		return -EINVAL;
 	}
 
 	/* De we have room for one more table? */
 	if (p->num_tables == RTE_PIPELINE_TABLE_MAX) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Incorrect value for num_tables parameter\n",
+		PIPELINE_LOG(ERR,
+			"%s: Incorrect value for num_tables parameter",
 			__func__);
 		return -EINVAL;
 	}
@@ -318,6 +327,7 @@ rte_table_check_params(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_create)
 int
 rte_pipeline_table_create(struct rte_pipeline *p,
 		struct rte_pipeline_table_params *params,
@@ -343,8 +353,8 @@ rte_pipeline_table_create(struct rte_pipeline *p,
 	default_entry = rte_zmalloc_socket(
 		"PIPELINE", entry_size, RTE_CACHE_LINE_SIZE, p->socket_id);
 	if (default_entry == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Failed to allocate default entry\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Failed to allocate default entry", __func__);
 		return -EINVAL;
 	}
 
@@ -353,7 +363,7 @@ rte_pipeline_table_create(struct rte_pipeline *p,
 		entry_size);
 	if (h_table == NULL) {
 		rte_free(default_entry);
-		RTE_LOG(ERR, PIPELINE, "%s: Table creation failed\n", __func__);
+		PIPELINE_LOG(ERR, "%s: Table creation failed", __func__);
 		return -EINVAL;
 	}
 
@@ -389,6 +399,7 @@ rte_pipeline_table_free(struct rte_table *table)
 	rte_free(table->default_entry);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_default_entry_add)
 int
 rte_pipeline_table_default_entry_add(struct rte_pipeline *p,
 	uint32_t table_id,
@@ -399,20 +410,20 @@ rte_pipeline_table_default_entry_add(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (default_entry == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: default_entry parameter is NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: default_entry parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
@@ -421,8 +432,8 @@ rte_pipeline_table_default_entry_add(struct rte_pipeline *p,
 	if ((default_entry->action == RTE_PIPELINE_ACTION_TABLE) &&
 		table->table_next_id_valid &&
 		(default_entry->table_id != table->table_next_id)) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Tree-like topologies not allowed\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Tree-like topologies not allowed", __func__);
 		return -EINVAL;
 	}
 
@@ -439,6 +450,7 @@ rte_pipeline_table_default_entry_add(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_default_entry_delete)
 int
 rte_pipeline_table_default_entry_delete(struct rte_pipeline *p,
 		uint32_t table_id,
@@ -448,14 +460,14 @@ rte_pipeline_table_default_entry_delete(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: pipeline parameter is NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: pipeline parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
@@ -472,6 +484,7 @@ rte_pipeline_table_default_entry_delete(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_entry_add)
 int
 rte_pipeline_table_entry_add(struct rte_pipeline *p,
 		uint32_t table_id,
@@ -484,32 +497,32 @@ rte_pipeline_table_entry_add(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (key == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: key parameter is NULL\n", __func__);
+		PIPELINE_LOG(ERR, "%s: key parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (entry == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: entry parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: entry parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
 	table = &p->tables[table_id];
 
 	if (table->ops.f_add == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: f_add function pointer NULL\n",
+		PIPELINE_LOG(ERR, "%s: f_add function pointer NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -517,8 +530,8 @@ rte_pipeline_table_entry_add(struct rte_pipeline *p,
 	if ((entry->action == RTE_PIPELINE_ACTION_TABLE) &&
 		table->table_next_id_valid &&
 		(entry->table_id != table->table_next_id)) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Tree-like topologies not allowed\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: Tree-like topologies not allowed", __func__);
 		return -EINVAL;
 	}
 
@@ -533,6 +546,7 @@ rte_pipeline_table_entry_add(struct rte_pipeline *p,
 		key_found, (void **) entry_ptr);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_entry_delete)
 int
 rte_pipeline_table_entry_delete(struct rte_pipeline *p,
 		uint32_t table_id,
@@ -544,34 +558,35 @@ rte_pipeline_table_entry_delete(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (key == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: key parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: key parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
 	table = &p->tables[table_id];
 
 	if (table->ops.f_delete == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_delete function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_delete function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
 	return (table->ops.f_delete)(table->h_table, key, key_found, entry);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_entry_add_bulk)
 int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
 	uint32_t table_id,
 	void **keys,
@@ -585,32 +600,32 @@ int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (keys == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: keys parameter is NULL\n", __func__);
+		PIPELINE_LOG(ERR, "%s: keys parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (entries == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: entries parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: entries parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
 	table = &p->tables[table_id];
 
 	if (table->ops.f_add_bulk == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: f_add_bulk function pointer NULL\n",
+		PIPELINE_LOG(ERR, "%s: f_add_bulk function pointer NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -619,8 +634,8 @@ int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
 		if ((entries[i]->action == RTE_PIPELINE_ACTION_TABLE) &&
 			table->table_next_id_valid &&
 			(entries[i]->table_id != table->table_next_id)) {
-			RTE_LOG(ERR, PIPELINE,
-				"%s: Tree-like topologies not allowed\n", __func__);
+			PIPELINE_LOG(ERR,
+				"%s: Tree-like topologies not allowed", __func__);
 			return -EINVAL;
 		}
 	}
@@ -638,6 +653,7 @@ int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
 		n_keys, key_found, (void **) entries_ptr);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_entry_delete_bulk)
 int rte_pipeline_table_entry_delete_bulk(struct rte_pipeline *p,
 	uint32_t table_id,
 	void **keys,
@@ -649,28 +665,28 @@ int rte_pipeline_table_entry_delete_bulk(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (keys == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: key parameter is NULL\n",
+		PIPELINE_LOG(ERR, "%s: key parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: table_id %d out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+			"%s: table_id %d out of range", __func__, table_id);
 		return -EINVAL;
 	}
 
 	table = &p->tables[table_id];
 
 	if (table->ops.f_delete_bulk == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_delete function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_delete function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -687,35 +703,35 @@ rte_pipeline_port_in_check_params(struct rte_pipeline *p,
 		uint32_t *port_id)
 {
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 	if (params == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params parameter NULL\n", __func__);
+		PIPELINE_LOG(ERR, "%s: params parameter NULL", __func__);
 		return -EINVAL;
 	}
 	if (port_id == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: port_id parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: port_id parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	/* ops */
 	if (params->ops == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params->ops parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: params->ops parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_create == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_create function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_create function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_rx == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: f_rx function pointer NULL\n",
+		PIPELINE_LOG(ERR, "%s: f_rx function pointer NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -723,15 +739,15 @@ rte_pipeline_port_in_check_params(struct rte_pipeline *p,
 	/* burst_size */
 	if ((params->burst_size == 0) ||
 		(params->burst_size > RTE_PORT_IN_BURST_SIZE_MAX)) {
-		RTE_LOG(ERR, PIPELINE, "%s: invalid value for burst_size\n",
+		PIPELINE_LOG(ERR, "%s: invalid value for burst_size",
 			__func__);
 		return -EINVAL;
 	}
 
 	/* Do we have room for one more port? */
 	if (p->num_ports_in == RTE_PIPELINE_PORT_IN_MAX) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: invalid value for num_ports_in\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: invalid value for num_ports_in", __func__);
 		return -EINVAL;
 	}
 
@@ -744,57 +760,58 @@ rte_pipeline_port_out_check_params(struct rte_pipeline *p,
 		uint32_t *port_id)
 {
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (params == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params parameter NULL\n", __func__);
+		PIPELINE_LOG(ERR, "%s: params parameter NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (port_id == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: port_id parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: port_id parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	/* ops */
 	if (params->ops == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: params->ops parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: params->ops parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_create == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_create function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_create function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_tx == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_tx function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_tx function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (params->ops->f_tx_bulk == NULL) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: f_tx_bulk function pointer NULL\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: f_tx_bulk function pointer NULL", __func__);
 		return -EINVAL;
 	}
 
 	/* Do we have room for one more port? */
 	if (p->num_ports_out == RTE_PIPELINE_PORT_OUT_MAX) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: invalid value for num_ports_out\n", __func__);
+		PIPELINE_LOG(ERR,
+			"%s: invalid value for num_ports_out", __func__);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_in_create)
 int
 rte_pipeline_port_in_create(struct rte_pipeline *p,
 		struct rte_pipeline_port_in_params *params,
@@ -816,7 +833,7 @@ rte_pipeline_port_in_create(struct rte_pipeline *p,
 	/* Create the port */
 	h_port = params->ops->f_create(params->arg_create, p->socket_id);
 	if (h_port == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: Port creation failed\n", __func__);
+		PIPELINE_LOG(ERR, "%s: Port creation failed", __func__);
 		return -EINVAL;
 	}
 
@@ -845,6 +862,7 @@ rte_pipeline_port_in_free(struct rte_port_in *port)
 		port->ops.f_free(port->h_port);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_out_create)
 int
 rte_pipeline_port_out_create(struct rte_pipeline *p,
 		struct rte_pipeline_port_out_params *params,
@@ -866,7 +884,7 @@ rte_pipeline_port_out_create(struct rte_pipeline *p,
 	/* Create the port */
 	h_port = params->ops->f_create(params->arg_create, p->socket_id);
 	if (h_port == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: Port creation failed\n", __func__);
+		PIPELINE_LOG(ERR, "%s: Port creation failed", __func__);
 		return -EINVAL;
 	}
 
@@ -892,6 +910,7 @@ rte_pipeline_port_out_free(struct rte_port_out *port)
 		port->ops.f_free(port->h_port);
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_in_connect_to_table)
 int
 rte_pipeline_port_in_connect_to_table(struct rte_pipeline *p,
 		uint32_t port_id,
@@ -901,21 +920,21 @@ rte_pipeline_port_in_connect_to_table(struct rte_pipeline *p,
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (port_id >= p->num_ports_in) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: port IN ID %u is out of range\n",
+		PIPELINE_LOG(ERR,
+			"%s: port IN ID %u is out of range",
 			__func__, port_id);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Table ID %u is out of range\n",
+		PIPELINE_LOG(ERR,
+			"%s: Table ID %u is out of range",
 			__func__, table_id);
 		return -EINVAL;
 	}
@@ -926,6 +945,7 @@ rte_pipeline_port_in_connect_to_table(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_in_enable)
 int
 rte_pipeline_port_in_enable(struct rte_pipeline *p, uint32_t port_id)
 {
@@ -935,14 +955,14 @@ rte_pipeline_port_in_enable(struct rte_pipeline *p, uint32_t port_id)
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (port_id >= p->num_ports_in) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: port IN ID %u is out of range\n",
+		PIPELINE_LOG(ERR,
+			"%s: port IN ID %u is out of range",
 			__func__, port_id);
 		return -EINVAL;
 	}
@@ -973,6 +993,7 @@ rte_pipeline_port_in_enable(struct rte_pipeline *p, uint32_t port_id)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_in_disable)
 int
 rte_pipeline_port_in_disable(struct rte_pipeline *p, uint32_t port_id)
 {
@@ -982,13 +1003,13 @@ rte_pipeline_port_in_disable(struct rte_pipeline *p, uint32_t port_id)
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 		__func__);
 		return -EINVAL;
 	}
 
 	if (port_id >= p->num_ports_in) {
-		RTE_LOG(ERR, PIPELINE, "%s: port IN ID %u is out of range\n",
+		PIPELINE_LOG(ERR, "%s: port IN ID %u is out of range",
 			__func__, port_id);
 		return -EINVAL;
 	}
@@ -1028,6 +1049,7 @@ rte_pipeline_port_in_disable(struct rte_pipeline *p, uint32_t port_id)
 /*
  * Pipeline run-time
  */
+RTE_EXPORT_SYMBOL(rte_pipeline_check)
 int
 rte_pipeline_check(struct rte_pipeline *p)
 {
@@ -1035,7 +1057,7 @@ rte_pipeline_check(struct rte_pipeline *p)
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -1043,17 +1065,17 @@ rte_pipeline_check(struct rte_pipeline *p)
 	/* Check that pipeline has at least one input port, one table and one
 	output port */
 	if (p->num_ports_in == 0) {
-		RTE_LOG(ERR, PIPELINE, "%s: must have at least 1 input port\n",
+		PIPELINE_LOG(ERR, "%s: must have at least 1 input port",
 			__func__);
 		return -EINVAL;
 	}
 	if (p->num_tables == 0) {
-		RTE_LOG(ERR, PIPELINE, "%s: must have at least 1 table\n",
+		PIPELINE_LOG(ERR, "%s: must have at least 1 table",
 			__func__);
 		return -EINVAL;
 	}
 	if (p->num_ports_out == 0) {
-		RTE_LOG(ERR, PIPELINE, "%s: must have at least 1 output port\n",
+		PIPELINE_LOG(ERR, "%s: must have at least 1 output port",
 			__func__);
 		return -EINVAL;
 	}
@@ -1063,8 +1085,8 @@ rte_pipeline_check(struct rte_pipeline *p)
 		struct rte_port_in *port_in = &p->ports_in[port_in_id];
 
 		if (port_in->table_id == RTE_TABLE_INVALID) {
-			RTE_LOG(ERR, PIPELINE,
-				"%s: Port IN ID %u is not connected\n",
+			PIPELINE_LOG(ERR,
+				"%s: Port IN ID %u is not connected",
 				__func__, port_in_id);
 			return -EINVAL;
 		}
@@ -1301,6 +1323,7 @@ rte_pipeline_action_handler_drop(struct rte_pipeline *p, uint64_t pkts_mask)
 	}
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_run)
 int
 rte_pipeline_run(struct rte_pipeline *p)
 {
@@ -1440,6 +1463,7 @@ rte_pipeline_run(struct rte_pipeline *p)
 	return (int) n_pkts;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_flush)
 int
 rte_pipeline_flush(struct rte_pipeline *p)
 {
@@ -1447,7 +1471,7 @@ rte_pipeline_flush(struct rte_pipeline *p)
 
 	/* Check input arguments */
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -1462,6 +1486,7 @@ rte_pipeline_flush(struct rte_pipeline *p)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_out_packet_insert)
 int
 rte_pipeline_port_out_packet_insert(struct rte_pipeline *p,
 	uint32_t port_id, struct rte_mbuf *pkt)
@@ -1473,6 +1498,7 @@ rte_pipeline_port_out_packet_insert(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_ah_packet_hijack)
 int rte_pipeline_ah_packet_hijack(struct rte_pipeline *p,
 	uint64_t pkts_mask)
 {
@@ -1482,6 +1508,7 @@ int rte_pipeline_ah_packet_hijack(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_ah_packet_drop)
 int rte_pipeline_ah_packet_drop(struct rte_pipeline *p,
 	uint64_t pkts_mask)
 {
@@ -1493,6 +1520,7 @@ int rte_pipeline_ah_packet_drop(struct rte_pipeline *p,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_in_stats_read)
 int rte_pipeline_port_in_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	struct rte_pipeline_port_in_stats *stats, int clear)
 {
@@ -1500,14 +1528,14 @@ int rte_pipeline_port_in_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	int retval;
 
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (port_id >= p->num_ports_in) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: port IN ID %u is out of range\n",
+		PIPELINE_LOG(ERR,
+			"%s: port IN ID %u is out of range",
 			__func__, port_id);
 		return -EINVAL;
 	}
@@ -1530,6 +1558,7 @@ int rte_pipeline_port_in_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_port_out_stats_read)
 int rte_pipeline_port_out_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	struct rte_pipeline_port_out_stats *stats, int clear)
 {
@@ -1537,13 +1566,13 @@ int rte_pipeline_port_out_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	int retval;
 
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n", __func__);
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL", __func__);
 		return -EINVAL;
 	}
 
 	if (port_id >= p->num_ports_out) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: port OUT ID %u is out of range\n", __func__, port_id);
+		PIPELINE_LOG(ERR,
+			"%s: port OUT ID %u is out of range", __func__, port_id);
 		return -EINVAL;
 	}
 
@@ -1564,6 +1593,7 @@ int rte_pipeline_port_out_stats_read(struct rte_pipeline *p, uint32_t port_id,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_pipeline_table_stats_read)
 int rte_pipeline_table_stats_read(struct rte_pipeline *p, uint32_t table_id,
 	struct rte_pipeline_table_stats *stats, int clear)
 {
@@ -1571,14 +1601,14 @@ int rte_pipeline_table_stats_read(struct rte_pipeline *p, uint32_t table_id,
 	int retval;
 
 	if (p == NULL) {
-		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+		PIPELINE_LOG(ERR, "%s: pipeline parameter NULL",
 			__func__);
 		return -EINVAL;
 	}
 
 	if (table_id >= p->num_tables) {
-		RTE_LOG(ERR, PIPELINE,
-				"%s: table %u is out of range\n", __func__, table_id);
+		PIPELINE_LOG(ERR,
+				"%s: table %u is out of range", __func__, table_id);
 		return -EINVAL;
 	}
 

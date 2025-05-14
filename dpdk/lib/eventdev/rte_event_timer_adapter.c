@@ -6,10 +6,12 @@
 #include <ctype.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
 
+#include <eal_export.h>
 #include <rte_memzone.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
@@ -30,27 +32,29 @@
 #define DATA_MZ_NAME_FORMAT "rte_event_timer_adapter_data_%d"
 
 RTE_LOG_REGISTER_SUFFIX(evtim_logtype, adapter.timer, NOTICE);
+#define RTE_LOGTYPE_EVTIM evtim_logtype
 RTE_LOG_REGISTER_SUFFIX(evtim_buffer_logtype, adapter.timer, NOTICE);
+#define RTE_LOGTYPE_EVTIM_BUF evtim_buffer_logtype
 RTE_LOG_REGISTER_SUFFIX(evtim_svc_logtype, adapter.timer.svc, NOTICE);
+#define RTE_LOGTYPE_EVTIM_SVC evtim_svc_logtype
 
 static struct rte_event_timer_adapter *adapters;
 
 static const struct event_timer_adapter_ops swtim_ops;
 
 #define EVTIM_LOG(level, logtype, ...) \
-	rte_log(RTE_LOG_ ## level, logtype, \
-		RTE_FMT("EVTIMER: %s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) \
-			"\n", __func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(level, logtype, \
+		"EVTIMER: %s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
-#define EVTIM_LOG_ERR(...) EVTIM_LOG(ERR, evtim_logtype, __VA_ARGS__)
+#define EVTIM_LOG_ERR(...) EVTIM_LOG(ERR, EVTIM, __VA_ARGS__)
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 #define EVTIM_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM, __VA_ARGS__)
 #define EVTIM_BUF_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_buffer_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM_BUF, __VA_ARGS__)
 #define EVTIM_SVC_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_svc_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM_SVC, __VA_ARGS__)
 #else
 #define EVTIM_LOG_DBG(...) (void)0
 #define EVTIM_BUF_LOG_DBG(...) (void)0
@@ -129,6 +133,7 @@ default_port_conf_cb(uint16_t id, uint8_t event_dev_id, uint8_t *event_port_id,
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_create)
 struct rte_event_timer_adapter *
 rte_event_timer_adapter_create(const struct rte_event_timer_adapter_conf *conf)
 {
@@ -136,6 +141,7 @@ rte_event_timer_adapter_create(const struct rte_event_timer_adapter_conf *conf)
 						  NULL);
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_create_ext)
 struct rte_event_timer_adapter *
 rte_event_timer_adapter_create_ext(
 		const struct rte_event_timer_adapter_conf *conf,
@@ -261,6 +267,7 @@ free_memzone:
 	return NULL;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_get_info)
 int
 rte_event_timer_adapter_get_info(const struct rte_event_timer_adapter *adapter,
 		struct rte_event_timer_adapter_info *adapter_info)
@@ -281,6 +288,7 @@ rte_event_timer_adapter_get_info(const struct rte_event_timer_adapter *adapter,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_start)
 int
 rte_event_timer_adapter_start(const struct rte_event_timer_adapter *adapter)
 {
@@ -304,6 +312,7 @@ rte_event_timer_adapter_start(const struct rte_event_timer_adapter *adapter)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_stop)
 int
 rte_event_timer_adapter_stop(const struct rte_event_timer_adapter *adapter)
 {
@@ -327,6 +336,7 @@ rte_event_timer_adapter_stop(const struct rte_event_timer_adapter *adapter)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_lookup)
 struct rte_event_timer_adapter *
 rte_event_timer_adapter_lookup(uint16_t adapter_id)
 {
@@ -394,6 +404,7 @@ rte_event_timer_adapter_lookup(uint16_t adapter_id)
 	return adapter;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_free)
 int
 rte_event_timer_adapter_free(struct rte_event_timer_adapter *adapter)
 {
@@ -435,6 +446,7 @@ rte_event_timer_adapter_free(struct rte_event_timer_adapter *adapter)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_service_id_get)
 int
 rte_event_timer_adapter_service_id_get(struct rte_event_timer_adapter *adapter,
 				       uint32_t *service_id)
@@ -452,6 +464,7 @@ rte_event_timer_adapter_service_id_get(struct rte_event_timer_adapter *adapter,
 	return adapter->data->service_inited ? 0 : -ESRCH;
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_stats_get)
 int
 rte_event_timer_adapter_stats_get(struct rte_event_timer_adapter *adapter,
 				  struct rte_event_timer_adapter_stats *stats)
@@ -466,6 +479,7 @@ rte_event_timer_adapter_stats_get(struct rte_event_timer_adapter *adapter,
 	return adapter->ops->stats_get(adapter, stats);
 }
 
+RTE_EXPORT_SYMBOL(rte_event_timer_adapter_stats_reset)
 int
 rte_event_timer_adapter_stats_reset(struct rte_event_timer_adapter *adapter)
 {
@@ -476,6 +490,7 @@ rte_event_timer_adapter_stats_reset(struct rte_event_timer_adapter *adapter)
 	return adapter->ops->stats_reset(adapter);
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_event_timer_remaining_ticks_get, 23.03)
 int
 rte_event_timer_remaining_ticks_get(
 			const struct rte_event_timer_adapter *adapter,
@@ -509,11 +524,11 @@ rte_event_timer_remaining_ticks_get(
 
 #define EXP_TIM_BUF_SZ 128
 
-struct event_buffer {
+struct __rte_cache_aligned event_buffer {
 	size_t head;
 	size_t tail;
 	struct rte_event events[EVENT_BUFFER_SZ];
-} __rte_cache_aligned;
+};
 
 static inline bool
 event_buffer_full(struct event_buffer *bufp)
@@ -629,9 +644,9 @@ struct swtim {
 	/* Identifier of timer data instance */
 	uint32_t timer_data_id;
 	/* Track which cores have actually armed a timer */
-	struct {
+	alignas(RTE_CACHE_LINE_SIZE) struct {
 		RTE_ATOMIC(uint16_t) v;
-	} __rte_cache_aligned in_use[RTE_MAX_LCORE];
+	} in_use[RTE_MAX_LCORE];
 	/* Track which cores' timer lists should be polled */
 	RTE_ATOMIC(unsigned int) poll_lcores[RTE_MAX_LCORE];
 	/* The number of lists that should be polled */

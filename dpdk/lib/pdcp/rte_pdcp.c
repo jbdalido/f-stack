@@ -2,6 +2,9 @@
  * Copyright(C) 2023 Marvell.
  */
 
+#include <stdalign.h>
+
+#include <eal_export.h>
 #include <rte_errno.h>
 #include <rte_pdcp.h>
 #include <rte_malloc.h>
@@ -32,7 +35,7 @@ pdcp_dynfield_register(void)
 	const struct rte_mbuf_dynfield dynfield_desc = {
 		.name = RTE_PDCP_DYNFIELD_NAME,
 		.size = sizeof(rte_pdcp_dynfield_t),
-		.align = __alignof__(rte_pdcp_dynfield_t),
+		.align = alignof(rte_pdcp_dynfield_t),
 	};
 
 	if (rte_pdcp_dynfield_offset != -1)
@@ -95,6 +98,7 @@ pdcp_dl_establish(struct rte_pdcp_entity *entity, const struct rte_pdcp_entity_c
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pdcp_entity_establish, 23.07)
 struct rte_pdcp_entity *
 rte_pdcp_entity_establish(const struct rte_pdcp_entity_conf *conf)
 {
@@ -195,6 +199,7 @@ pdcp_dl_release(struct rte_pdcp_entity *entity, struct rte_mbuf *out_mb[])
 	return nb_out;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pdcp_entity_release, 23.07)
 int
 rte_pdcp_entity_release(struct rte_pdcp_entity *pdcp_entity, struct rte_mbuf *out_mb[])
 {
@@ -217,6 +222,7 @@ rte_pdcp_entity_release(struct rte_pdcp_entity *pdcp_entity, struct rte_mbuf *ou
 	return nb_out;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pdcp_entity_suspend, 23.07)
 int
 rte_pdcp_entity_suspend(struct rte_pdcp_entity *pdcp_entity,
 			struct rte_mbuf *out_mb[])
@@ -244,6 +250,7 @@ rte_pdcp_entity_suspend(struct rte_pdcp_entity *pdcp_entity,
 	return nb_out;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pdcp_control_pdu_create, 23.07)
 struct rte_mbuf *
 rte_pdcp_control_pdu_create(struct rte_pdcp_entity *pdcp_entity,
 			    enum rte_pdcp_ctrl_pdu_type type)
@@ -284,6 +291,7 @@ rte_pdcp_control_pdu_create(struct rte_pdcp_entity *pdcp_entity,
 	return m;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pdcp_t_reordering_expiry_handle, 23.07)
 uint16_t
 rte_pdcp_t_reordering_expiry_handle(const struct rte_pdcp_entity *entity, struct rte_mbuf *out_mb[])
 {

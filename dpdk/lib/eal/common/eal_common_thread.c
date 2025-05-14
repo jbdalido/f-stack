@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include <eal_export.h>
 #include <eal_trace_internal.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>
@@ -22,12 +23,15 @@
 #include "eal_thread.h"
 #include "eal_trace.h"
 
+RTE_EXPORT_SYMBOL(per_lcore__lcore_id)
 RTE_DEFINE_PER_LCORE(unsigned int, _lcore_id) = LCORE_ID_ANY;
+RTE_EXPORT_SYMBOL(per_lcore__thread_id)
 RTE_DEFINE_PER_LCORE(int, _thread_id) = -1;
 static RTE_DEFINE_PER_LCORE(unsigned int, _socket_id) =
 	(unsigned int)SOCKET_ID_ANY;
 static RTE_DEFINE_PER_LCORE(rte_cpuset_t, _cpuset);
 
+RTE_EXPORT_SYMBOL(rte_socket_id)
 unsigned rte_socket_id(void)
 {
 	return RTE_PER_LCORE(_socket_id);
@@ -82,11 +86,12 @@ thread_update_affinity(rte_cpuset_t *cpusetp)
 	}
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_set_affinity)
 int
 rte_thread_set_affinity(rte_cpuset_t *cpusetp)
 {
 	if (rte_thread_set_affinity_by_id(rte_thread_self(), cpusetp) != 0) {
-		RTE_LOG(ERR, EAL, "rte_thread_set_affinity_by_id failed\n");
+		EAL_LOG(ERR, "rte_thread_set_affinity_by_id failed");
 		return -1;
 	}
 
@@ -94,6 +99,7 @@ rte_thread_set_affinity(rte_cpuset_t *cpusetp)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_get_affinity)
 void
 rte_thread_get_affinity(rte_cpuset_t *cpusetp)
 {
@@ -175,7 +181,7 @@ eal_thread_loop(void *arg)
 	__rte_thread_init(lcore_id, &lcore_config[lcore_id].cpuset);
 
 	ret = eal_thread_dump_current_affinity(cpuset, sizeof(cpuset));
-	RTE_LOG(DEBUG, EAL, "lcore %u is ready (tid=%zx;cpuset=[%s%s])\n",
+	EAL_LOG(DEBUG, "lcore %u is ready (tid=%zx;cpuset=[%s%s])",
 		lcore_id, rte_thread_self().opaque_id, cpuset,
 		ret == 0 ? "" : "...");
 
@@ -282,6 +288,7 @@ static uint32_t control_thread_start(void *arg)
 	return start_routine(start_arg);
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_create_control)
 int
 rte_thread_create_control(rte_thread_t *thread, const char *name,
 		rte_thread_func start_routine, void *arg)
@@ -341,6 +348,7 @@ add_internal_prefix(char *prefixed_name, const char *name, size_t size)
 	strlcpy(prefixed_name + prefixlen, name, size - prefixlen);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(rte_thread_create_internal_control)
 int
 rte_thread_create_internal_control(rte_thread_t *id, const char *name,
 		rte_thread_func func, void *arg)
@@ -351,6 +359,7 @@ rte_thread_create_internal_control(rte_thread_t *id, const char *name,
 	return rte_thread_create_control(id, prefixed_name, func, arg);
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(rte_thread_set_prefixed_name)
 void
 rte_thread_set_prefixed_name(rte_thread_t id, const char *name)
 {
@@ -360,6 +369,7 @@ rte_thread_set_prefixed_name(rte_thread_t id, const char *name)
 	rte_thread_set_name(id, prefixed_name);
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_register)
 int
 rte_thread_register(void)
 {
@@ -368,12 +378,12 @@ rte_thread_register(void)
 
 	/* EAL init flushes all lcores, we can't register before. */
 	if (eal_get_internal_configuration()->init_complete != 1) {
-		RTE_LOG(DEBUG, EAL, "Called %s before EAL init.\n", __func__);
+		EAL_LOG(DEBUG, "Called %s before EAL init.", __func__);
 		rte_errno = EINVAL;
 		return -1;
 	}
 	if (!rte_mp_disable()) {
-		RTE_LOG(ERR, EAL, "Multiprocess in use, registering non-EAL threads is not supported.\n");
+		EAL_LOG(ERR, "Multiprocess in use, registering non-EAL threads is not supported.");
 		rte_errno = EINVAL;
 		return -1;
 	}
@@ -387,11 +397,12 @@ rte_thread_register(void)
 		rte_errno = ENOMEM;
 		return -1;
 	}
-	RTE_LOG(DEBUG, EAL, "Registered non-EAL thread as lcore %u.\n",
+	EAL_LOG(DEBUG, "Registered non-EAL thread as lcore %u.",
 		lcore_id);
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_unregister)
 void
 rte_thread_unregister(void)
 {
@@ -401,10 +412,11 @@ rte_thread_unregister(void)
 		eal_lcore_non_eal_release(lcore_id);
 	__rte_thread_uninit();
 	if (lcore_id != LCORE_ID_ANY)
-		RTE_LOG(DEBUG, EAL, "Unregistered non-EAL thread (was lcore %u).\n",
+		EAL_LOG(DEBUG, "Unregistered non-EAL thread (was lcore %u).",
 			lcore_id);
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_attr_init)
 int
 rte_thread_attr_init(rte_thread_attr_t *attr)
 {
@@ -417,6 +429,7 @@ rte_thread_attr_init(rte_thread_attr_t *attr)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_attr_set_priority)
 int
 rte_thread_attr_set_priority(rte_thread_attr_t *thread_attr,
 		enum rte_thread_priority priority)
@@ -429,6 +442,7 @@ rte_thread_attr_set_priority(rte_thread_attr_t *thread_attr,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_attr_set_affinity)
 int
 rte_thread_attr_set_affinity(rte_thread_attr_t *thread_attr,
 		rte_cpuset_t *cpuset)
@@ -444,6 +458,7 @@ rte_thread_attr_set_affinity(rte_thread_attr_t *thread_attr,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thread_attr_get_affinity)
 int
 rte_thread_attr_get_affinity(rte_thread_attr_t *thread_attr,
 		rte_cpuset_t *cpuset)

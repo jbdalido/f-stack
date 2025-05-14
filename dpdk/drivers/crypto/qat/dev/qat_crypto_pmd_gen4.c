@@ -125,7 +125,7 @@ qat_sym_crypto_cap_get_gen4(struct qat_cryptodev_private *internals,
 	uint32_t legacy_size = sizeof(qat_sym_crypto_legacy_caps_gen4);
 	legacy_capa_num = legacy_size/sizeof(struct rte_cryptodev_capabilities);
 
-	if (unlikely(qat_legacy_capa))
+	if (unlikely(internals->qat_dev->options.legacy_alg))
 		size = size + legacy_size;
 
 	internals->capa_mz = rte_memzone_lookup(capa_memz_name);
@@ -145,7 +145,7 @@ qat_sym_crypto_cap_get_gen4(struct qat_cryptodev_private *internals,
 
 	struct rte_cryptodev_capabilities *capabilities;
 
-	if (unlikely(qat_legacy_capa)) {
+	if (unlikely(internals->qat_dev->options.legacy_alg)) {
 		capabilities = qat_sym_crypto_legacy_caps_gen4;
 		memcpy(addr, capabilities, legacy_size);
 		addr += legacy_capa_num;
@@ -306,7 +306,7 @@ qat_sym_dp_dequeue_done_gen4(void *qp_data, uint8_t *drv_ctx, uint32_t n)
 	return 0;
 }
 
-static int
+int
 qat_sym_crypto_set_session_gen4(void *cdev, void *session)
 {
 	struct qat_sym_session *ctx = session;
@@ -458,7 +458,7 @@ qat_sym_dp_enqueue_aead_jobs_gen4(void *qp_data, uint8_t *drv_ctx,
 	return i;
 }
 
-static int
+int
 qat_sym_configure_raw_dp_ctx_gen4(void *_raw_dp_ctx, void *_ctx)
 {
 	struct rte_crypto_raw_dp_ctx *raw_dp_ctx = _raw_dp_ctx;
@@ -519,14 +519,18 @@ qat_sym_configure_raw_dp_ctx_gen4(void *_raw_dp_ctx, void *_ctx)
 
 RTE_INIT(qat_sym_crypto_gen4_init)
 {
-	qat_sym_gen_dev_ops[QAT_GEN4].cryptodev_ops = &qat_sym_crypto_ops_gen1;
-	qat_sym_gen_dev_ops[QAT_GEN4].get_capabilities =
+	qat_sym_gen_dev_ops[QAT_VQAT].cryptodev_ops =
+		qat_sym_gen_dev_ops[QAT_GEN4].cryptodev_ops = &qat_sym_crypto_ops_gen1;
+	qat_sym_gen_dev_ops[QAT_VQAT].get_capabilities =
+		qat_sym_gen_dev_ops[QAT_GEN4].get_capabilities =
 			qat_sym_crypto_cap_get_gen4;
-	qat_sym_gen_dev_ops[QAT_GEN4].set_session =
+	qat_sym_gen_dev_ops[QAT_VQAT].set_session =
+		qat_sym_gen_dev_ops[QAT_GEN4].set_session =
 			qat_sym_crypto_set_session_gen4;
 	qat_sym_gen_dev_ops[QAT_GEN4].set_raw_dp_ctx =
 			qat_sym_configure_raw_dp_ctx_gen4;
-	qat_sym_gen_dev_ops[QAT_GEN4].get_feature_flags =
+	qat_sym_gen_dev_ops[QAT_VQAT].get_feature_flags =
+		qat_sym_gen_dev_ops[QAT_GEN4].get_feature_flags =
 			qat_sym_crypto_feature_flags_get_gen1;
 	qat_sym_gen_dev_ops[QAT_GEN4].create_security_ctx =
 			qat_sym_create_security_gen1;
@@ -534,12 +538,16 @@ RTE_INIT(qat_sym_crypto_gen4_init)
 
 RTE_INIT(qat_asym_crypto_gen4_init)
 {
-	qat_asym_gen_dev_ops[QAT_GEN4].cryptodev_ops =
+	qat_asym_gen_dev_ops[QAT_VQAT].cryptodev_ops =
+		qat_asym_gen_dev_ops[QAT_GEN4].cryptodev_ops =
 			&qat_asym_crypto_ops_gen1;
-	qat_asym_gen_dev_ops[QAT_GEN4].get_capabilities =
+	qat_asym_gen_dev_ops[QAT_VQAT].get_capabilities =
+		qat_asym_gen_dev_ops[QAT_GEN4].get_capabilities =
 			qat_asym_crypto_cap_get_gen1;
-	qat_asym_gen_dev_ops[QAT_GEN4].get_feature_flags =
+	qat_asym_gen_dev_ops[QAT_VQAT].get_feature_flags =
+		qat_asym_gen_dev_ops[QAT_GEN4].get_feature_flags =
 			qat_asym_crypto_feature_flags_get_gen1;
-	qat_asym_gen_dev_ops[QAT_GEN4].set_session =
+	qat_asym_gen_dev_ops[QAT_VQAT].set_session =
+		qat_asym_gen_dev_ops[QAT_GEN4].set_session =
 			qat_asym_crypto_set_session_gen1;
 }

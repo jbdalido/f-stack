@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 
+#include <eal_export.h>
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
 #include <rte_pci.h>
@@ -190,9 +191,10 @@ struct mlx5_shared_data *mlx5_shared_data;
 /** Driver-specific log messages type. */
 int mlx5_logtype;
 
-static LIST_HEAD(, mlx5_dev_ctx_shared) mlx5_dev_ctx_list =
-						LIST_HEAD_INITIALIZER();
+static LIST_HEAD(mlx5_dev_ctx_list, mlx5_dev_ctx_shared) dev_ctx_list = LIST_HEAD_INITIALIZER();
+static LIST_HEAD(mlx5_phdev_list, mlx5_physical_device) phdev_list = LIST_HEAD_INITIALIZER();
 static pthread_mutex_t mlx5_dev_ctx_list_mutex;
+
 static const struct mlx5_indexed_pool_config mlx5_ipool_cfg[] = {
 #if defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_INFINIBAND_VERBS_H)
 	[MLX5_IPOOL_DECAP_ENCAP] = {
@@ -854,8 +856,8 @@ mlx5_flow_aso_ct_mng_close(struct mlx5_dev_ctx_shared *sh)
 		ct_pool = mng->pools[idx];
 		for (i = 0; i < MLX5_ASO_CT_ACTIONS_PER_POOL; i++) {
 			ct = &ct_pool->actions[i];
-			val = __atomic_fetch_sub(&ct->refcnt, 1,
-						 __ATOMIC_RELAXED);
+			val = rte_atomic_fetch_sub_explicit(&ct->refcnt, 1,
+						 rte_memory_order_relaxed);
 			MLX5_ASSERT(val == 1);
 			if (val > 1)
 				cnt++;
@@ -1081,7 +1083,8 @@ mlx5_alloc_srh_flex_parser(struct rte_eth_dev *dev)
 		DRV_LOG(ERR, "Dynamic flex parser is not supported on HWS");
 		return -ENOTSUP;
 	}
-	if (__atomic_fetch_add(&priv->sh->srh_flex_parser.refcnt, 1, __ATOMIC_RELAXED) + 1 > 1)
+	if (rte_atomic_fetch_add_explicit(&priv->sh->srh_flex_parser.refcnt, 1,
+			rte_memory_order_relaxed) + 1 > 1)
 		return 0;
 	priv->sh->srh_flex_parser.flex.devx_fp = mlx5_malloc(MLX5_MEM_ZERO,
 			sizeof(struct mlx5_flex_parser_devx), 0, SOCKET_ID_ANY);
@@ -1172,7 +1175,7 @@ mlx5_free_srh_flex_parser(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_internal_flex_parser_profile *fp = &priv->sh->srh_flex_parser;
 
-	if (__atomic_fetch_sub(&fp->refcnt, 1, __ATOMIC_RELAXED) - 1)
+	if (rte_atomic_fetch_sub_explicit(&fp->refcnt, 1, rte_memory_order_relaxed) - 1)
 		return;
 	mlx5_devx_cmd_destroy(fp->flex.devx_fp->devx_obj);
 	mlx5_free(fp->flex.devx_fp);
@@ -1596,14 +1599,13 @@ void
 mlx5_rt_timestamp_config(struct mlx5_dev_ctx_shared *sh,
 			 struct mlx5_hca_attr *hca_attr)
 {
-	uint32_t dw_cnt = MLX5_ST_SZ_DW(register_mtutc);
-	uint32_t reg[dw_cnt];
+	uint32_t reg[MLX5_ST_SZ_DW(register_mtutc)];
 	int ret = ENOTSUP;
 
 	if (hca_attr->access_register_user)
 		ret = mlx5_devx_cmd_register_read(sh->cdev->ctx,
 						  MLX5_REGISTER_ID_MTUTC, 0,
-						  reg, dw_cnt);
+						  reg, RTE_DIM(reg));
 	if (!ret) {
 		uint32_t ts_mode;
 
@@ -1623,7 +1625,8 @@ mlx5_init_hws_flow_tags_registers(struct mlx5_dev_ctx_shared *sh)
 {
 	struct mlx5_dev_registers *reg = &sh->registers;
 	uint32_t meta_mode = sh->config.dv_xmeta_en;
-	uint16_t masks = (uint16_t)sh->cdev->config.hca_attr.set_reg_c;
+	uint16_t reg_c_caps = (uint16_t)sh->cdev->config.hca_attr.set_reg_c;
+	uint16_t masks = reg_c_caps;
 	uint16_t unset = 0;
 	uint32_t i, j;
 
@@ -1642,6 +1645,20 @@ mlx5_init_hws_flow_tags_registers(struct mlx5_dev_ctx_shared *sh)
 	for (i = 0, j = 0; i < MLX5_FLOW_HW_TAGS_MAX; i++) {
 		if (!!((1 << i) & masks))
 			reg->hw_avl_tags[j++] = mlx5_regc_value(i);
+	}
+	/*
+	 * Set the registers for NAT64 usage internally. REG_C_6 is always used.
+	 * The other 2 registers will be fetched from right to left, at least 2
+	 * tag registers should be available.
+	 * If not enough registers are available or REG_C_6 is not supported by current FW,
+	 * NAT64 action will not be supported.
+	 */
+	if ((reg_c_caps & RTE_BIT32(mlx5_regc_index(REG_C_6))) &&
+	    j >= MLX5_FLOW_NAT64_REGS_MAX - 1) {
+		MLX5_ASSERT(j >= (MLX5_FLOW_NAT64_REGS_MAX - 1));
+		reg->nat64_regs[0] = REG_C_6;
+		reg->nat64_regs[1] = reg->hw_avl_tags[j - 2];
+		reg->nat64_regs[2] = reg->hw_avl_tags[j - 1];
 	}
 }
 
@@ -1693,6 +1710,85 @@ mlx5_init_shared_dev_registers(struct mlx5_dev_ctx_shared *sh)
 		mlx5_init_hws_flow_tags_registers(sh);
 }
 
+static struct mlx5_physical_device *
+mlx5_get_physical_device(struct mlx5_common_device *cdev)
+{
+	struct mlx5_physical_device *phdev;
+	struct mlx5_hca_attr *attr = &cdev->config.hca_attr;
+
+	/* Search for physical device by system_image_guid. */
+	LIST_FOREACH(phdev, &phdev_list, next) {
+		if (phdev->guid == attr->system_image_guid) {
+			phdev->refcnt++;
+			return phdev;
+		}
+	}
+	phdev = mlx5_malloc(MLX5_MEM_ZERO | MLX5_MEM_RTE,
+			    sizeof(struct mlx5_physical_device),
+			    RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	if (!phdev) {
+		DRV_LOG(ERR, "Physical device allocation failure.");
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+	/*
+	 * The same CTX create the physical device objects should destroy them.
+	 * Since we can't be sure it will be done by same CTX, we prepare for
+	 * the physical device a special CTX used by objects creation.
+	 */
+	phdev->ctx = mlx5_os_get_physical_device_ctx(cdev);
+	if (!phdev->ctx) {
+		mlx5_free(phdev);
+		return NULL;
+	}
+	phdev->guid = attr->system_image_guid;
+	phdev->refcnt = 1;
+	LIST_INSERT_HEAD(&phdev_list, phdev, next);
+	DRV_LOG(DEBUG, "Physical device is created, guid=%" PRIu64 ".",
+		phdev->guid);
+	return phdev;
+}
+
+struct mlx5_physical_device *
+mlx5_get_locked_physical_device(struct mlx5_priv *priv)
+{
+	pthread_mutex_lock(&mlx5_dev_ctx_list_mutex);
+	return priv->sh->phdev;
+}
+
+void
+mlx5_unlock_physical_device(void)
+{
+	pthread_mutex_unlock(&mlx5_dev_ctx_list_mutex);
+}
+
+static void
+mlx5_physical_device_destroy(struct mlx5_physical_device *phdev)
+{
+#ifdef RTE_LIBRTE_MLX5_DEBUG
+	/* Check the object presence in the list. */
+	struct mlx5_physical_device *lphdev;
+
+	LIST_FOREACH(lphdev, &phdev_list, next)
+		if (lphdev == phdev)
+			break;
+	MLX5_ASSERT(lphdev);
+	if (lphdev != phdev) {
+		DRV_LOG(ERR, "Freeing non-existing physical device");
+		return;
+	}
+#endif
+	MLX5_ASSERT(phdev);
+	MLX5_ASSERT(phdev->refcnt);
+	if (--phdev->refcnt)
+		return;
+	/* Remove physical device from the global device list. */
+	LIST_REMOVE(phdev, next);
+	MLX5_ASSERT(phdev->ctx);
+	claim_zero(mlx5_glue->close_device(phdev->ctx));
+	mlx5_free(phdev);
+}
+
 /**
  * Allocate shared device context. If there is multiport device the
  * master and representors will share this context, if there is single
@@ -1726,7 +1822,7 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 	MLX5_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	pthread_mutex_lock(&mlx5_dev_ctx_list_mutex);
 	/* Search for IB context by device name. */
-	LIST_FOREACH(sh, &mlx5_dev_ctx_list, next) {
+	LIST_FOREACH(sh, &dev_ctx_list, next) {
 		if (!strcmp(sh->ibdev_name, spawn->phys_dev_name)) {
 			sh->refcnt++;
 			goto exit;
@@ -1766,6 +1862,9 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 		sizeof(sh->ibdev_name) - 1);
 	strncpy(sh->ibdev_path, mlx5_os_get_ctx_device_path(sh->cdev->ctx),
 		sizeof(sh->ibdev_path) - 1);
+	sh->phdev = mlx5_get_physical_device(sh->cdev);
+	if (!sh->phdev)
+		goto error;
 	/*
 	 * Setting port_id to max unallowed value means there is no interrupt
 	 * subhandler installed for the given port index i.
@@ -1799,7 +1898,7 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 #endif
 	}
 	mlx5_os_dev_shared_handler_install(sh);
-	if (LIST_EMPTY(&mlx5_dev_ctx_list)) {
+	if (LIST_EMPTY(&dev_ctx_list)) {
 		err = mlx5_flow_os_init_workspace_once();
 		if (err)
 			goto error;
@@ -1812,7 +1911,7 @@ mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
 	mlx5_flow_aging_init(sh);
 	mlx5_flow_ipool_create(sh);
 	/* Add context to the global device list. */
-	LIST_INSERT_HEAD(&mlx5_dev_ctx_list, sh, next);
+	LIST_INSERT_HEAD(&dev_ctx_list, sh, next);
 	rte_spinlock_init(&sh->geneve_tlv_opt_sl);
 	mlx5_init_shared_dev_registers(sh);
 	/* Init counter pool list header and lock. */
@@ -1834,6 +1933,8 @@ error:
 	} while (++i <= (uint32_t)sh->bond.n_port);
 	if (sh->td)
 		claim_zero(mlx5_devx_cmd_destroy(sh->td));
+	if (sh->phdev)
+		mlx5_physical_device_destroy(sh->phdev);
 	mlx5_free(sh);
 	rte_errno = err;
 	return NULL;
@@ -1920,7 +2021,7 @@ mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh)
 	/* Check the object presence in the list. */
 	struct mlx5_dev_ctx_shared *lctx;
 
-	LIST_FOREACH(lctx, &mlx5_dev_ctx_list, next)
+	LIST_FOREACH(lctx, &dev_ctx_list, next)
 		if (lctx == sh)
 			break;
 	MLX5_ASSERT(lctx);
@@ -1946,7 +2047,7 @@ mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh)
 	/* Remove context from the global device list. */
 	LIST_REMOVE(sh, next);
 	/* Release resources on the last device removal. */
-	if (LIST_EMPTY(&mlx5_dev_ctx_list)) {
+	if (LIST_EMPTY(&dev_ctx_list)) {
 		mlx5_os_net_cleanup();
 		mlx5_flow_os_release_workspace();
 	}
@@ -1977,15 +2078,10 @@ mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh)
 	} while (++i <= sh->bond.n_port);
 	if (sh->td)
 		claim_zero(mlx5_devx_cmd_destroy(sh->td));
-#ifdef HAVE_MLX5_HWS_SUPPORT
-	/* HWS manages geneve_tlv_option resource as global. */
-	if (sh->config.dv_flow_en == 2)
-		flow_dev_geneve_tlv_option_resource_release(sh);
-	else
-#endif
-		MLX5_ASSERT(sh->geneve_tlv_option_resource == NULL);
+	MLX5_ASSERT(sh->geneve_tlv_option_resource == NULL);
 	pthread_mutex_destroy(&sh->txpp.mutex);
 	mlx5_lwm_unset(sh);
+	mlx5_physical_device_destroy(sh->phdev);
 	mlx5_free(sh);
 	return;
 exit:
@@ -2222,10 +2318,13 @@ int
 mlx5_dev_close(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_dev_ctx_shared *sh;
 	unsigned int i;
 	int ret;
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		if (!priv)
+			DRV_LOG(WARNING, "primary process is already closed");
 		/* Check if process_private released. */
 		if (!dev->process_private)
 			return 0;
@@ -2234,7 +2333,8 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		rte_eth_dev_release_port(dev);
 		return 0;
 	}
-	if (!priv->sh)
+	sh = priv->sh;
+	if (!sh)
 		return 0;
 	if (priv->shared_refcnt) {
 		DRV_LOG(ERR, "port %u is shared host in use (%u)",
@@ -2243,15 +2343,12 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		return -EBUSY;
 	}
 	DRV_LOG(DEBUG, "port %u closing device \"%s\"",
-		dev->data->port_id,
-		((priv->sh->cdev->ctx != NULL) ?
-		mlx5_os_get_ctx_device_name(priv->sh->cdev->ctx) : ""));
+		dev->data->port_id, sh->ibdev_name);
 	/*
 	 * If default mreg copy action is removed at the stop stage,
 	 * the search will return none and nothing will be done anymore.
 	 */
-	if (priv->sh->config.dv_flow_en != 2)
-		mlx5_flow_stop_default(dev);
+	mlx5_flow_stop_default(dev);
 	mlx5_traffic_disable(dev);
 	/*
 	 * If all the flows are already flushed in the device stop stage,
@@ -2275,7 +2372,17 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	/* dr context will be closed after mlx5_os_free_shared_dr. */
 	flow_hw_resource_release(dev);
 	flow_hw_clear_port_info(dev);
+	if (priv->tlv_options != NULL) {
+		/* Free the GENEVE TLV parser resource. */
+		claim_zero(mlx5_geneve_tlv_options_destroy(priv->tlv_options, sh->phdev));
+		priv->tlv_options = NULL;
+	}
+	if (priv->ptype_rss_groups) {
+		mlx5_ipool_destroy(priv->ptype_rss_groups);
+		priv->ptype_rss_groups = NULL;
+	}
 #endif
+	mlx5_q_counters_destroy(dev);
 	if (priv->rxq_privs != NULL) {
 		/* XXX race condition if mlx5_rx_burst() is still running. */
 		rte_delay_us_sleep(1000);
@@ -2296,10 +2403,6 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	mlx5_proc_priv_uninit(dev);
 	if (priv->drop_queue.hrxq)
 		mlx5_drop_action_destroy(dev);
-	if (priv->q_counters) {
-		mlx5_devx_cmd_destroy(priv->q_counters);
-		priv->q_counters = NULL;
-	}
 	mlx5_mprq_free_mp(dev);
 	mlx5_os_free_shared_dr(priv);
 #ifdef HAVE_MLX5_HWS_SUPPORT
@@ -2312,7 +2415,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		mlx5_free(priv->rss_conf.rss_key);
 	if (priv->reta_idx != NULL)
 		mlx5_free(priv->reta_idx);
-	if (priv->sh->dev_cap.vf)
+	if (sh->dev_cap.vf)
 		mlx5_os_mac_addr_flush(dev);
 	if (priv->nl_socket_route >= 0)
 		close(priv->nl_socket_route);
@@ -2344,6 +2447,10 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	if (ret)
 		DRV_LOG(WARNING, "port %u some Verbs Tx queue still remain",
 			dev->data->port_id);
+	ret = mlx5_ext_txq_verify(dev);
+	if (ret)
+		DRV_LOG(WARNING, "Port %u some external TxQ still remain.",
+			dev->data->port_id);
 	ret = mlx5_txq_verify(dev);
 	if (ret)
 		DRV_LOG(WARNING, "port %u some Tx queues still remain",
@@ -2355,7 +2462,8 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	if (priv->hrxqs)
 		mlx5_list_destroy(priv->hrxqs);
 	mlx5_free(priv->ext_rxqs);
-	priv->sh->port[priv->dev_port - 1].nl_ih_port_id = RTE_MAX_ETHPORTS;
+	mlx5_free(priv->ext_txqs);
+	sh->port[priv->dev_port - 1].nl_ih_port_id = RTE_MAX_ETHPORTS;
 	/*
 	 * The interrupt handler port id must be reset before priv is reset
 	 * since 'mlx5_dev_interrupt_nl_cb' uses priv.
@@ -2367,7 +2475,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	 * mlx5_os_mac_addr_flush() uses ibdev_path for retrieving
 	 * ifindex if Netlink fails.
 	 */
-	mlx5_free_shared_dev_ctx(priv->sh);
+	mlx5_free_shared_dev_ctx(sh);
 	if (priv->domain_id != RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID) {
 		unsigned int c = 0;
 		uint16_t port_id;
@@ -2414,6 +2522,11 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.xstats_get = mlx5_xstats_get,
 	.xstats_reset = mlx5_xstats_reset,
 	.xstats_get_names = mlx5_xstats_get_names,
+
+	.xstats_enable = mlx5_xstats_enable,
+	.xstats_disable = mlx5_xstats_disable,
+	.xstats_query_state = mlx5_xstats_query_state,
+
 	.fw_version_get = mlx5_fw_version_get,
 	.dev_infos_get = mlx5_dev_infos_get,
 	.representor_info_get = mlx5_representor_info_get,
@@ -2468,6 +2581,7 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.count_aggr_ports = mlx5_count_aggr_ports,
 	.map_aggr_tx_affinity = mlx5_map_aggr_tx_affinity,
 	.rx_metadata_negotiate = mlx5_flow_rx_metadata_negotiate,
+	.get_restore_flags = mlx5_get_restore_flags,
 };
 
 /* Available operations from secondary process. */
@@ -2560,6 +2674,7 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.get_monitor_addr = mlx5_get_monitor_addr,
 	.count_aggr_ports = mlx5_count_aggr_ports,
 	.map_aggr_tx_affinity = mlx5_map_aggr_tx_affinity,
+	.get_restore_flags = mlx5_get_restore_flags,
 };
 
 /**
@@ -2939,7 +3054,7 @@ mlx5_probe_again_args_validate(struct mlx5_common_device *cdev,
 		return 0;
 	pthread_mutex_lock(&mlx5_dev_ctx_list_mutex);
 	/* Search for IB context by common device pointer. */
-	LIST_FOREACH(sh, &mlx5_dev_ctx_list, next)
+	LIST_FOREACH(sh, &dev_ctx_list, next)
 		if (sh->cdev == cdev)
 			break;
 	pthread_mutex_unlock(&mlx5_dev_ctx_list_mutex);
@@ -3198,7 +3313,7 @@ mlx5_set_metadata_mask(struct rte_eth_dev *dev)
 		break;
 	case MLX5_XMETA_MODE_META32_HWS:
 		meta = UINT32_MAX;
-		mark = MLX5_FLOW_MARK_MASK;
+		mark = (reg_c0 >> rte_bsf32(reg_c0)) & MLX5_FLOW_MARK_MASK;
 		break;
 	default:
 		meta = 0;
@@ -3227,6 +3342,7 @@ mlx5_set_metadata_mask(struct rte_eth_dev *dev)
 	DRV_LOG(DEBUG, "metadata reg_c0 mask %08X", sh->dv_regc0_mask);
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_get_dyn_flag_names, 20.02)
 int
 rte_pmd_mlx5_get_dyn_flag_names(char *names[], unsigned int n)
 {
@@ -3283,6 +3399,282 @@ mlx5_eth_find_next(uint16_t port_id, struct rte_device *odev)
 	if (port_id >= RTE_MAX_ETHPORTS)
 		return RTE_MAX_ETHPORTS;
 	return port_id;
+}
+
+static int
+mlx5_hairpin_queue_counter_supported(struct mlx5_priv *priv)
+{
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		DRV_LOG(WARNING,
+			"DevX counter is not supported in the secondary process");
+		return -ENOTSUP;
+	}
+
+	if (priv->obj_ops.rxq_obj_modify_counter_set_id == NULL) {
+		DRV_LOG(WARNING,
+			"DevX counter is not supported in this device");
+		return -ENOTSUP;
+	}
+	return 0;
+}
+
+/**
+ * Disables the port-level hairpin counter.
+ *
+ * This function iterates over each RXQ, detaches it from the global
+ * counter if it's a hairpin counter, and then destroys the global counter object if
+ * it exists.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param id
+ *   The counter ID to disable (not used in this implementation).
+ *
+ * @return
+ *   0 on success, error code otherwise.
+ */
+int
+mlx5_disable_port_level_hairpin_counter(struct rte_eth_dev *dev, uint64_t id __rte_unused)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	unsigned int num_rxqs = priv->rxqs_n;
+	unsigned int i;
+
+	if (priv->q_counter_hairpin == NULL)
+		return 0;
+
+	/* Detach each RXQ from the global hairpin counter */
+	for (i = 0; i < num_rxqs; ++i) {
+		struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, i);
+
+		if (rxq == NULL || rxq->ctrl->obj->rq == NULL || !rxq->ctrl->is_hairpin)
+			continue;
+
+		if (priv->obj_ops.rxq_obj_modify_counter_set_id(rxq, 0) != 0)
+			DRV_LOG(ERR, "Port %u failed to modify rq object %s",
+						priv->dev_data->port_id, strerror(rte_errno));
+	}
+
+	mlx5_devx_cmd_destroy(priv->q_counter_hairpin);
+	priv->q_counter_hairpin = NULL;
+
+	/* Reset oob stats. */
+	mlx5_reset_xstats_by_name(priv, "hairpin_out_of_buffer");
+	return 0;
+}
+
+/**
+ * Enables the port-level hairpin counter.
+ *
+ * This function iterates over each RXQ, allocate a q counter and attach it to each
+ * hairpin queue.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param id
+ *   The counter ID to disable (not used in this implementation).
+ *
+ * @return
+ *   0 on success, error code otherwise.
+ */
+int
+mlx5_enable_port_level_hairpin_counter(struct rte_eth_dev *dev, uint64_t id __rte_unused)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_rxq_priv *rxq;
+	int syndrome = 0;
+	unsigned int i;
+
+	int ret = mlx5_hairpin_queue_counter_supported(priv);
+	if (ret) {
+		DRV_LOG(DEBUG, "Hairpin out of buffer counter "
+				"is not available on this NIC.");
+		return ret;
+	}
+
+	/* check if counter is enable per queue - if yes - fail to enable per port */
+	if (priv->num_of_hairpin_q_counter_enabled != 0) {
+		DRV_LOG(WARNING, "Hairpin out of buffer counter is enabled per queue.");
+		return -EINVAL;
+	}
+
+	/* Alloc global hairpin queue counter. */
+	priv->q_counter_hairpin = mlx5_devx_cmd_queue_counter_alloc(priv->sh->cdev->ctx, &syndrome);
+	if (!priv->q_counter_hairpin) {
+		if (syndrome == MLX5_Q_COUNTERS_LIMIT_REACHED) {
+			DRV_LOG(ERR, "Maximum number of queue counters reached. "
+				"Unable to create counter object for Port %d using DevX.",
+				priv->dev_data->port_id);
+			return -ENOSPC;
+		}
+		DRV_LOG(ERR, "Port %d global hairpin queue counter object cannot be created "
+			"by DevX.", priv->dev_data->port_id);
+		return -ENOMEM;
+	}
+
+	/* go over each queue and attach to global counter */
+	for (i = 0; (i != priv->rxqs_n); ++i) {
+		rxq = mlx5_rxq_get(dev, i);
+
+		if (rxq == NULL || rxq->ctrl->obj->rq == NULL || !rxq->ctrl->is_hairpin)
+			continue;
+
+		ret = priv->obj_ops.rxq_obj_modify_counter_set_id(rxq, priv->q_counter_hairpin->id);
+		if (ret) {
+			DRV_LOG(ERR, "failed to modify rq object for port %u"
+				"%s", priv->dev_data->port_id, strerror(rte_errno));
+			return ret;
+		}
+	}
+
+	/* Reset oob stats. */
+	mlx5_reset_xstats_by_name(priv, "hairpin_out_of_buffer");
+	return 0;
+}
+
+/**
+ * Creates a queue counter for hairpin Rx queue.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param id
+ *   Index of the RX queue to disable the hairpin queue counter for.
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_enable_per_queue_hairpin_counter(struct rte_eth_dev *dev, uint64_t id)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_rxq_priv *rxq;
+	struct mlx5_rxq_data *rxq_data;
+	int syndrome = 0;
+
+	int ret = mlx5_hairpin_queue_counter_supported(priv);
+	if (ret) {
+		DRV_LOG(DEBUG, "Hairpin out of buffer counter "
+				"is not available on this NIC.");
+		return ret;
+	}
+
+	/* check if we have port level counter enabled. if yes, don't set the queue level counter */
+	if (priv->q_counter_hairpin) {
+		DRV_LOG(WARNING, "Hairpin out of buffer counter is enabled per port.");
+		return -EINVAL;
+	}
+
+	rxq = mlx5_rxq_get(dev, id);
+	if (rxq == NULL || rxq->ctrl->obj->rq == NULL || !rxq->ctrl->is_hairpin)
+		return -EINVAL;
+
+	if (rxq->q_counter != NULL)
+		return 0;
+
+	/* Alloc hairpin queue counter. */
+	rxq->q_counter = mlx5_devx_cmd_queue_counter_alloc(priv->sh->cdev->ctx, &syndrome);
+	if (rxq->q_counter == NULL) {
+		if (syndrome == MLX5_Q_COUNTERS_LIMIT_REACHED) {
+			DRV_LOG(ERR, "Maximum number of queue counters reached. "
+				"Unable to create counter object for Port %d, Queue %d "
+				"using DevX. The counter from this queue will not increment.",
+				priv->dev_data->port_id, rxq->idx);
+			return -ENOSPC;
+		}
+		DRV_LOG(ERR, "Port %d queue %d counter object cannot be created "
+			"by DevX. Counter from this queue will not increment.",
+			priv->dev_data->port_id, rxq->idx);
+		return -ENOMEM;
+	}
+
+	ret = priv->obj_ops.rxq_obj_modify_counter_set_id(rxq, rxq->q_counter->id);
+	if (ret) {
+		DRV_LOG(ERR, "failed to modify rq object for port %u"
+			"%s", priv->dev_data->port_id, strerror(rte_errno));
+		return ret;
+	}
+
+	rxq_data = mlx5_rxq_data_get(dev, id);
+	if (rxq_data != NULL)
+		rxq_data->stats.oobs.ctrl.enabled = 1;
+
+	priv->num_of_hairpin_q_counter_enabled++;
+	return 0;
+}
+
+/**
+ * Disables the hairpin queue counter for a specified RX queue.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param id
+ *   Index of the RX queue to disable the hairpin queue counter for.
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_disable_per_queue_hairpin_counter(struct rte_eth_dev *dev, uint64_t id)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_rxq_priv *rxq;
+	struct mlx5_rxq_data *rxq_data;
+	int ret = 0;
+
+	rxq = mlx5_rxq_get(dev, id);
+	rxq_data = mlx5_rxq_data_get(dev, id);
+
+	if (rxq == NULL || rxq->ctrl->obj->rq == NULL || !rxq->ctrl->is_hairpin)
+		return 0;
+
+	if (rxq->q_counter != NULL) {
+		/* Modify rxq. */
+		ret = priv->obj_ops.rxq_obj_modify_counter_set_id(rxq, 0);
+		if (ret)
+			DRV_LOG(ERR, "Port %u failed to modify rq object "
+				" %s", priv->dev_data->port_id, strerror(rte_errno));
+
+		mlx5_devx_cmd_destroy(rxq->q_counter);
+		rxq->q_counter = NULL;
+	}
+
+	/* Reset queue oob stats. */
+	if (rxq_data != NULL) {
+		rxq_data->stats.oobs.count = 0;
+		rxq_data->stats_reset.oobs.count = 0;
+		rxq_data->stats.oobs.ctrl.enabled = 0;
+	}
+
+	priv->num_of_hairpin_q_counter_enabled--;
+	return 0;
+}
+
+/**
+ * Read statistics per queue by a named counter.
+ *
+ * @param[in] q_counter
+ *   Pointer to the queue's counter object.
+ * @param[in] ctr_name
+ *   Pointer to the name of the statistic counter to read
+ * @param[out] stat
+ *   Pointer to read statistic value.
+ * @return
+ *   0 on success and stat is valid, 1 if failed to read the value
+ *   rte_errno is set.
+ *
+ */
+int
+mlx5_read_queue_counter(struct mlx5_devx_obj *q_counter, const char *ctr_name,
+		      uint64_t *stat)
+{
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		DRV_LOG(WARNING,
+			"DevX %s counter is not supported in the secondary process", ctr_name);
+		return -ENOTSUP;
+	}
+
+	if (q_counter == NULL)
+		return -EINVAL;
+
+	return mlx5_devx_cmd_queue_counter_query(q_counter, 0, (uint32_t *)stat);
 }
 
 /**
@@ -3388,6 +3780,11 @@ static const struct rte_pci_id mlx5_pci_id_map[] = {
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
 				PCI_DEVICE_ID_MELLANOX_BLUEFIELD3)
 	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+				PCI_DEVICE_ID_MELLANOX_CONNECTX8)
+	},
+
 	{
 		.vendor_id = 0
 	}

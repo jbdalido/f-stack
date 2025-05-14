@@ -4,6 +4,7 @@
 #ifndef __CNXK_ETHDEV_DP_H__
 #define __CNXK_ETHDEV_DP_H__
 
+#include <rte_security_driver.h>
 #include <rte_mbuf.h>
 
 /* If PTP is enabled additional SEND MEM DESC is required which
@@ -34,8 +35,11 @@
 #define ERRCODE_ERRLEN_WIDTH 12
 #define ERR_ARRAY_SZ	     ((BIT(ERRCODE_ERRLEN_WIDTH)) * sizeof(uint32_t))
 
-#define SA_BASE_TBL_SZ	(RTE_MAX_ETHPORTS * sizeof(uintptr_t))
-#define MEMPOOL_TBL_SZ	(RTE_MAX_ETHPORTS * sizeof(uintptr_t))
+#define SA_BASE_OFFSET 8 /* offset in bytes */
+#define MEMPOOL_OFFSET 8 /* offset in bytes */
+#define BUFLEN_OFFSET  8 /* offset in bytes */
+#define LOOKUP_MEM_PORTDATA_SZ (SA_BASE_OFFSET + MEMPOOL_OFFSET + BUFLEN_OFFSET)
+#define LOOKUP_MEM_PORTDATA_TOTAL_SZ (RTE_MAX_ETHPORTS * LOOKUP_MEM_PORTDATA_SZ)
 
 #define CNXK_NIX_UDP_TUN_BITMASK                                               \
 	((1ull << (RTE_MBUF_F_TX_TUNNEL_VXLAN >> 45)) |                               \
@@ -57,6 +61,9 @@
 	(CNXK_TM_MARK_VLAN_DEI | CNXK_TM_MARK_IP_DSCP | CNXK_TM_MARK_IP_ECN)
 
 #define CNXK_TX_MARK_FMT_MASK (0xFFFFFFFFFFFFull)
+
+#define CNXK_NIX_CQ_ENTRY_SZ 128
+#define CQE_SZ(x)            ((x) * CNXK_NIX_CQ_ENTRY_SZ)
 
 struct cnxk_eth_txq_comp {
 	uintptr_t desc_base;
@@ -80,6 +87,13 @@ struct cnxk_timesync_info {
 	int tstamp_dynfield_offset;
 	rte_iova_t tx_tstamp_iova;
 	uint64_t *tx_tstamp;
+} __plt_cache_aligned;
+
+struct cnxk_ethdev_inj_cfg {
+	uintptr_t lmt_base;
+	uint64_t io_addr;
+	uint64_t sa_base;
+	uint64_t cmd_w0;
 } __plt_cache_aligned;
 
 /* Inlines */
@@ -163,20 +177,36 @@ static __rte_always_inline uintptr_t
 cnxk_nix_sa_base_get(uint16_t port, const void *lookup_mem)
 {
 	uintptr_t sa_base_tbl;
+	uint32_t offset;
 
 	sa_base_tbl = (uintptr_t)lookup_mem;
 	sa_base_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
-	return *((const uintptr_t *)sa_base_tbl + port);
+	offset = port * LOOKUP_MEM_PORTDATA_SZ;
+	return *((const uintptr_t *)sa_base_tbl + offset / 8);
 }
 
 static __rte_always_inline uintptr_t
 cnxk_nix_inl_metapool_get(uint16_t port, const void *lookup_mem)
 {
 	uintptr_t metapool_tbl;
+	uint32_t offset;
 
 	metapool_tbl = (uintptr_t)lookup_mem;
-	metapool_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ + SA_BASE_TBL_SZ;
-	return *((const uintptr_t *)metapool_tbl + port);
+	metapool_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET;
+	return *((const uintptr_t *)metapool_tbl + offset / 8);
+}
+
+static __rte_always_inline uintptr_t
+cnxk_nix_inl_bufsize_get(uint16_t port, const void *lookup_mem)
+{
+	uintptr_t bufsz_tbl;
+	uint32_t offset;
+
+	bufsz_tbl = (uintptr_t)lookup_mem;
+	bufsz_tbl += PTYPE_ARRAY_SZ + ERR_ARRAY_SZ;
+	offset = (port * LOOKUP_MEM_PORTDATA_SZ) + SA_BASE_OFFSET + MEMPOOL_OFFSET;
+	return *((const uintptr_t *)bufsz_tbl + offset / 8);
 }
 
 #endif /* __CNXK_ETHDEV_DP_H__ */

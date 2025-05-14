@@ -2,8 +2,10 @@
  * Copyright(c) 2021 Intel Corporation
  */
 
+#include <stdalign.h>
 #include <sys/queue.h>
 
+#include <eal_export.h>
 #include <rte_thash.h>
 #include <rte_tailq.h>
 #include <rte_random.h>
@@ -12,6 +14,11 @@
 #include <rte_eal_memconfig.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
+
+RTE_LOG_REGISTER_SUFFIX(thash_logtype, thash, INFO);
+#define RTE_LOGTYPE_HASH thash_logtype
+#define HASH_LOG(level, ...) \
+	RTE_LOG_LINE(level, HASH, "" __VA_ARGS__)
 
 #define THASH_NAME_LEN		64
 #define TOEPLITZ_HASH_LEN	32
@@ -24,33 +31,6 @@ static struct rte_tailq_elem rte_thash_tailq = {
 	.name = "RTE_THASH",
 };
 EAL_REGISTER_TAILQ(rte_thash_tailq)
-
-/**
- * Table of some irreducible polinomials over GF(2).
- * For lfsr they are represented in BE bit order, and
- * x^0 is masked out.
- * For example, poly x^5 + x^2 + 1 will be represented
- * as (101001b & 11111b) = 01001b = 0x9
- */
-static const uint32_t irreducible_poly_table[][4] = {
-	{0, 0, 0, 0},	/** < degree 0 */
-	{1, 1, 1, 1},	/** < degree 1 */
-	{0x3, 0x3, 0x3, 0x3},	/** < degree 2 and so on... */
-	{0x5, 0x3, 0x5, 0x3},
-	{0x9, 0x3, 0x9, 0x3},
-	{0x9, 0x1b, 0xf, 0x5},
-	{0x21, 0x33, 0x1b, 0x2d},
-	{0x41, 0x11, 0x71, 0x9},
-	{0x71, 0xa9, 0xf5, 0x8d},
-	{0x21, 0xd1, 0x69, 0x1d9},
-	{0x81, 0x2c1, 0x3b1, 0x185},
-	{0x201, 0x541, 0x341, 0x461},
-	{0x941, 0x609, 0xe19, 0x45d},
-	{0x1601, 0x1f51, 0x1171, 0x359},
-	{0x2141, 0x2111, 0x2db1, 0x2109},
-	{0x4001, 0x801, 0x101, 0x7301},
-	{0x7781, 0xa011, 0x4211, 0x86d9},
-};
 
 struct thash_lfsr {
 	uint32_t	ref_cnt;
@@ -75,7 +55,7 @@ struct rte_thash_subtuple_helper {
 	uint32_t	tuple_offset;	/** < Offset in bits of the subtuple */
 	uint32_t	tuple_len;	/** < Length in bits of the subtuple */
 	uint32_t	lsb_msk;	/** < (1 << reta_sz_log) - 1 */
-	__extension__ uint32_t	compl_table[0] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint32_t	compl_table[];
 	/** < Complementary table */
 };
 
@@ -88,9 +68,10 @@ struct rte_thash_ctx {
 	uint32_t	flags;
 	uint64_t	*matrices;
 	/**< matrices used with rte_thash_gfni implementation */
-	uint8_t		hash_key[0];
+	uint8_t		hash_key[];
 };
 
+RTE_EXPORT_SYMBOL(rte_thash_gfni_supported)
 int
 rte_thash_gfni_supported(void)
 {
@@ -104,6 +85,7 @@ rte_thash_gfni_supported(void)
 	return 0;
 };
 
+RTE_EXPORT_SYMBOL(rte_thash_complete_matrix)
 void
 rte_thash_complete_matrix(uint64_t *matrixes, const uint8_t *rss_key, int size)
 {
@@ -154,13 +136,6 @@ get_rev_bit_lfsr(struct thash_lfsr *lfsr)
 }
 
 static inline uint32_t
-thash_get_rand_poly(uint32_t poly_degree)
-{
-	return irreducible_poly_table[poly_degree][rte_rand() %
-		RTE_DIM(irreducible_poly_table[poly_degree])];
-}
-
-static inline uint32_t
 get_rev_poly(uint32_t poly, int degree)
 {
 	int i;
@@ -185,19 +160,19 @@ get_rev_poly(uint32_t poly, int degree)
 }
 
 static struct thash_lfsr *
-alloc_lfsr(struct rte_thash_ctx *ctx)
+alloc_lfsr(uint32_t poly_degree)
 {
 	struct thash_lfsr *lfsr;
 	uint32_t i;
 
-	if (ctx == NULL)
+	if ((poly_degree > 32) || (poly_degree == 0))
 		return NULL;
 
 	lfsr = rte_zmalloc(NULL, sizeof(struct thash_lfsr), 0);
 	if (lfsr == NULL)
 		return NULL;
 
-	lfsr->deg = ctx->reta_sz_log;
+	lfsr->deg = poly_degree;
 	lfsr->poly = thash_get_rand_poly(lfsr->deg);
 	do {
 		lfsr->state = rte_rand() & ((1 << lfsr->deg) - 1);
@@ -231,6 +206,7 @@ free_lfsr(struct thash_lfsr *lfsr)
 		rte_free(lfsr);
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_init_ctx)
 struct rte_thash_ctx *
 rte_thash_init_ctx(const char *name, uint32_t key_len, uint32_t reta_sz,
 	uint8_t *key, uint32_t flags)
@@ -264,8 +240,8 @@ rte_thash_init_ctx(const char *name, uint32_t key_len, uint32_t reta_sz,
 	/* allocate tailq entry */
 	te = rte_zmalloc("THASH_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
-		RTE_LOG(ERR, HASH,
-			"Can not allocate tailq entry for thash context %s\n",
+		HASH_LOG(ERR,
+			"Can not allocate tailq entry for thash context %s",
 			name);
 		rte_errno = ENOMEM;
 		goto exit;
@@ -273,7 +249,7 @@ rte_thash_init_ctx(const char *name, uint32_t key_len, uint32_t reta_sz,
 
 	ctx = rte_zmalloc(NULL, sizeof(struct rte_thash_ctx) + key_len, 0);
 	if (ctx == NULL) {
-		RTE_LOG(ERR, HASH, "thash ctx %s memory allocation failed\n",
+		HASH_LOG(ERR, "thash ctx %s memory allocation failed",
 			name);
 		rte_errno = ENOMEM;
 		goto free_te;
@@ -296,7 +272,7 @@ rte_thash_init_ctx(const char *name, uint32_t key_len, uint32_t reta_sz,
 		ctx->matrices = rte_zmalloc(NULL, key_len * sizeof(uint64_t),
 			RTE_CACHE_LINE_SIZE);
 		if (ctx->matrices == NULL) {
-			RTE_LOG(ERR, HASH, "Cannot allocate matrices\n");
+			HASH_LOG(ERR, "Cannot allocate matrices");
 			rte_errno = ENOMEM;
 			goto free_ctx;
 		}
@@ -321,6 +297,7 @@ exit:
 	return NULL;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_find_existing)
 struct rte_thash_ctx *
 rte_thash_find_existing(const char *name)
 {
@@ -347,6 +324,7 @@ rte_thash_find_existing(const char *name)
 	return ctx;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_free_ctx)
 void
 rte_thash_free_ctx(struct rte_thash_ctx *ctx)
 {
@@ -411,8 +389,8 @@ generate_subkey(struct rte_thash_ctx *ctx, struct thash_lfsr *lfsr,
 	if (((lfsr->bits_cnt + req_bits) > (1ULL << lfsr->deg) - 1) &&
 			((ctx->flags & RTE_THASH_IGNORE_PERIOD_OVERFLOW) !=
 			RTE_THASH_IGNORE_PERIOD_OVERFLOW)) {
-		RTE_LOG(ERR, HASH,
-			"Can't generate m-sequence due to period overflow\n");
+		HASH_LOG(ERR,
+			"Can't generate m-sequence due to period overflow");
 		return -ENOSPC;
 	}
 
@@ -478,7 +456,7 @@ insert_before(struct rte_thash_ctx *ctx,
 	int ret;
 
 	if (end < cur_ent->offset) {
-		ent->lfsr = alloc_lfsr(ctx);
+		ent->lfsr = alloc_lfsr(ctx->reta_sz_log);
 		if (ent->lfsr == NULL) {
 			rte_free(ent);
 			return -ENOMEM;
@@ -491,9 +469,9 @@ insert_before(struct rte_thash_ctx *ctx,
 			return ret;
 		}
 	} else if ((next_ent != NULL) && (end > next_ent->offset)) {
-		RTE_LOG(ERR, HASH,
+		HASH_LOG(ERR,
 			"Can't add helper %s due to conflict with existing"
-			" helper %s\n", ent->name, next_ent->name);
+			" helper %s", ent->name, next_ent->name);
 		rte_free(ent);
 		return -ENOSPC;
 	}
@@ -540,9 +518,9 @@ insert_after(struct rte_thash_ctx *ctx,
 	int ret;
 
 	if ((next_ent != NULL) && (end > next_ent->offset)) {
-		RTE_LOG(ERR, HASH,
+		HASH_LOG(ERR,
 			"Can't add helper %s due to conflict with existing"
-			" helper %s\n", ent->name, next_ent->name);
+			" helper %s", ent->name, next_ent->name);
 		rte_free(ent);
 		return -EEXIST;
 	}
@@ -568,6 +546,7 @@ insert_after(struct rte_thash_ctx *ctx,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_add_helper)
 int
 rte_thash_add_helper(struct rte_thash_ctx *ctx, const char *name, uint32_t len,
 	uint32_t offset)
@@ -593,7 +572,7 @@ rte_thash_add_helper(struct rte_thash_ctx *ctx, const char *name, uint32_t len,
 		offset;
 
 	ent = rte_zmalloc(NULL, sizeof(struct rte_thash_subtuple_helper) +
-		sizeof(uint32_t) * (1 << ctx->reta_sz_log),
+		(sizeof(uint32_t) << ctx->reta_sz_log),
 		RTE_CACHE_LINE_SIZE);
 	if (ent == NULL)
 		return -ENOMEM;
@@ -631,7 +610,7 @@ rte_thash_add_helper(struct rte_thash_ctx *ctx, const char *name, uint32_t len,
 		continue;
 	}
 
-	ent->lfsr = alloc_lfsr(ctx);
+	ent->lfsr = alloc_lfsr(ctx->reta_sz_log);
 	if (ent->lfsr == NULL) {
 		rte_free(ent);
 		return -ENOMEM;
@@ -658,6 +637,7 @@ rte_thash_add_helper(struct rte_thash_ctx *ctx, const char *name, uint32_t len,
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_get_helper)
 struct rte_thash_subtuple_helper *
 rte_thash_get_helper(struct rte_thash_ctx *ctx, const char *name)
 {
@@ -674,6 +654,7 @@ rte_thash_get_helper(struct rte_thash_ctx *ctx, const char *name)
 	return NULL;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_get_complement)
 uint32_t
 rte_thash_get_complement(struct rte_thash_subtuple_helper *h,
 	uint32_t hash, uint32_t desired_hash)
@@ -681,12 +662,14 @@ rte_thash_get_complement(struct rte_thash_subtuple_helper *h,
 	return h->compl_table[(hash ^ desired_hash) & h->lsb_msk];
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_get_key)
 const uint8_t *
 rte_thash_get_key(struct rte_thash_ctx *ctx)
 {
 	return ctx->hash_key;
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_get_gfni_matrices)
 const uint64_t *
 rte_thash_get_gfni_matrices(struct rte_thash_ctx *ctx)
 {
@@ -782,6 +765,7 @@ write_unaligned_bits(uint8_t *ptr, int len, int offset, uint32_t val)
 	}
 }
 
+RTE_EXPORT_SYMBOL(rte_thash_adjust_tuple)
 int
 rte_thash_adjust_tuple(struct rte_thash_ctx *ctx,
 	struct rte_thash_subtuple_helper *h,
@@ -789,7 +773,7 @@ rte_thash_adjust_tuple(struct rte_thash_ctx *ctx,
 	uint32_t desired_value,	unsigned int attempts,
 	rte_thash_check_tuple_t fn, void *userdata)
 {
-	uint32_t tmp_tuple[tuple_len / sizeof(uint32_t)];
+	uint32_t tmp_tuple[RTE_THASH_TUPLE_LEN_MAX];
 	unsigned int i, j, ret = 0;
 	uint32_t hash, adj_bits;
 	const uint8_t *hash_key;
@@ -849,4 +833,31 @@ rte_thash_adjust_tuple(struct rte_thash_ctx *ctx,
 	}
 
 	return ret;
+}
+
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_thash_gen_key, 24.11)
+int
+rte_thash_gen_key(uint8_t *key, size_t key_len, size_t reta_sz_log,
+	uint32_t entropy_start, size_t entropy_sz)
+{
+	size_t i, end, start;
+
+	/* define lfsr sequence range*/
+	end = entropy_start + entropy_sz + TOEPLITZ_HASH_LEN - 1;
+	start = end - (entropy_sz + reta_sz_log - 1);
+
+	if ((key == NULL) || (key_len * CHAR_BIT < entropy_start + entropy_sz) ||
+			(entropy_sz < reta_sz_log) || (reta_sz_log > TOEPLITZ_HASH_LEN))
+		return -EINVAL;
+
+	struct thash_lfsr *lfsr = alloc_lfsr(reta_sz_log);
+	if (lfsr == NULL)
+		return -ENOMEM;
+
+	for (i = start; i < end; i++)
+		set_bit(key, get_bit_lfsr(lfsr), i);
+
+	free_lfsr(lfsr);
+
+	return 0;
 }

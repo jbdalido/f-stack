@@ -1,0 +1,33 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "linux",
+    hdrs = glob(["**/*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "devx",
+    hdrs = [
+        "drivers/infiniband/hw/mlx5/devx.h",
+    ],
+    strip_include_prefix = "drivers/infiniband/hw/mlx5/",
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "libbpf",
+    hdrs = glob(["tools/lib/**/*.h"]),
+    includes = ["tools/lib"],
+    visibility = ["//visibility:public"],
+)
+
+
+
+cc_library(
+    name = "uapi",
+    hdrs = glob(["include/uapi/**/*.h"]),
+    includes = ["include/uapi"],
+    visibility = ["//visibility:public"],
+)

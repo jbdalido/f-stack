@@ -79,11 +79,6 @@
 	for (iter = val; iter < size; iter++)
 #endif
 
-#ifdef VHOST_ICC_UNROLL_PRAGMA
-#define vhost_for_each_try_unroll(iter, val, size) _Pragma("unroll (4)") \
-	for (iter = val; iter < size; iter++)
-#endif
-
 #ifndef vhost_for_each_try_unroll
 #define vhost_for_each_try_unroll(iter, val, num) \
 	for (iter = val; iter < num; iter++)
@@ -156,6 +151,7 @@ struct virtqueue_stats {
 	uint64_t iotlb_misses;
 	uint64_t inflight_submitted;
 	uint64_t inflight_completed;
+	uint64_t mbuf_alloc_failed;
 	uint64_t guest_notifications_suppressed;
 	/* Counters below are atomic, and should be incremented as such. */
 	RTE_ATOMIC(uint64_t) guest_notifications;
@@ -268,10 +264,28 @@ struct vhost_async {
 	};
 };
 
+#define VHOST_RECONNECT_VERSION		0x0
+#define VHOST_MAX_VRING			0x100
+#define VHOST_MAX_QUEUE_PAIRS		0x80
+
+struct __rte_cache_aligned vhost_reconnect_vring {
+	uint16_t last_avail_idx;
+	bool avail_wrap_counter;
+};
+
+struct vhost_reconnect_data {
+	uint32_t version;
+	uint64_t features;
+	uint8_t status;
+	struct virtio_net_config config;
+	uint32_t nr_vrings;
+	struct vhost_reconnect_vring vring[VHOST_MAX_VRING];
+};
+
 /**
  * Structure contains variables relevant to RX/TX virtqueues.
  */
-struct vhost_virtqueue {
+struct __rte_cache_aligned vhost_virtqueue {
 	union {
 		struct vring_desc	*desc;
 		struct vring_packed_desc   *desc_packed;
@@ -295,7 +309,8 @@ struct vhost_virtqueue {
 #define VIRTIO_UNINITIALIZED_EVENTFD	(-2)
 
 	bool			enabled;
-	bool			access_ok;
+	/* Protected by vq->access_lock */
+	bool			access_ok __rte_guarded_var;
 	bool			ready;
 
 	rte_rwlock_t		access_lock;
@@ -349,7 +364,8 @@ struct vhost_virtqueue {
 	struct virtqueue_stats	stats;
 
 	RTE_ATOMIC(bool) irq_pending;
-} __rte_cache_aligned;
+	struct vhost_reconnect_vring *reconnect_log;
+};
 
 /* Virtio device status as per Virtio specification */
 #define VIRTIO_DEVICE_STATUS_RESET		0x00
@@ -359,9 +375,6 @@ struct vhost_virtqueue {
 #define VIRTIO_DEVICE_STATUS_FEATURES_OK	0x08
 #define VIRTIO_DEVICE_STATUS_DEV_NEED_RESET	0x40
 #define VIRTIO_DEVICE_STATUS_FAILED		0x80
-
-#define VHOST_MAX_VRING			0x100
-#define VHOST_MAX_QUEUE_PAIRS		0x80
 
 /* Declare IOMMU related bits for older kernels */
 #ifndef VIRTIO_F_IOMMU_PLATFORM
@@ -477,7 +490,7 @@ struct inflight_mem_info {
  * Device structure contains all configuration information relating
  * to the device.
  */
-struct virtio_net {
+struct __rte_cache_aligned virtio_net {
 	/* Frontend (QEMU) memory and memory region information */
 	struct rte_vhost_memory	*mem;
 	uint64_t		features;
@@ -536,11 +549,29 @@ struct virtio_net {
 	struct rte_vhost_user_extern_ops extern_ops;
 
 	struct vhost_backend_ops *backend_ops;
-} __rte_cache_aligned;
+
+	struct vhost_reconnect_data *reconnect_log;
+};
+
+static __rte_always_inline void
+vhost_virtqueue_reconnect_log_split(struct vhost_virtqueue *vq)
+{
+	if (vq->reconnect_log != NULL)
+		vq->reconnect_log->last_avail_idx = vq->last_avail_idx;
+}
+
+static __rte_always_inline void
+vhost_virtqueue_reconnect_log_packed(struct vhost_virtqueue *vq)
+{
+	if (vq->reconnect_log != NULL) {
+		vq->reconnect_log->last_avail_idx = vq->last_avail_idx;
+		vq->reconnect_log->avail_wrap_counter = vq->avail_wrap_counter;
+	}
+}
 
 static inline void
 vq_assert_lock__(struct virtio_net *dev, struct vhost_virtqueue *vq, const char *func)
-	__rte_assert_exclusive_lock(&vq->access_lock)
+	__rte_assert_capability(&vq->access_lock)
 {
 	if (unlikely(!rte_rwlock_write_is_locked(&vq->access_lock)))
 		rte_panic("VHOST_CONFIG: (%s) %s() called without access lock taken.\n",
@@ -582,6 +613,7 @@ vq_inc_last_avail_packed(struct vhost_virtqueue *vq, uint16_t num)
 		vq->avail_wrap_counter ^= 1;
 		vq->last_avail_idx -= vq->size;
 	}
+	vhost_virtqueue_reconnect_log_packed(vq);
 }
 
 void __vhost_log_cache_write(struct virtio_net *dev,
@@ -590,14 +622,14 @@ void __vhost_log_cache_write(struct virtio_net *dev,
 void __vhost_log_cache_write_iova(struct virtio_net *dev,
 		struct vhost_virtqueue *vq,
 		uint64_t iova, uint64_t len)
-	__rte_shared_locks_required(&vq->iotlb_lock);
+	__rte_requires_shared_capability(&vq->iotlb_lock);
 void __vhost_log_cache_sync(struct virtio_net *dev,
 		struct vhost_virtqueue *vq);
 
 void __vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len);
 void __vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			    uint64_t iova, uint64_t len)
-	__rte_shared_locks_required(&vq->iotlb_lock);
+	__rte_requires_shared_capability(&vq->iotlb_lock);
 
 static __rte_always_inline void
 vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len)
@@ -647,7 +679,7 @@ vhost_log_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 static __rte_always_inline void
 vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			   uint64_t iova, uint64_t len)
-	__rte_shared_locks_required(&vq->iotlb_lock)
+	__rte_requires_shared_capability(&vq->iotlb_lock)
 {
 	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
 		return;
@@ -661,7 +693,7 @@ vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 static __rte_always_inline void
 vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			   uint64_t iova, uint64_t len)
-	__rte_shared_locks_required(&vq->iotlb_lock)
+	__rte_requires_shared_capability(&vq->iotlb_lock)
 {
 	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
 		return;
@@ -673,17 +705,15 @@ vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 }
 
 extern int vhost_config_log_level;
+#define RTE_LOGTYPE_VHOST_CONFIG vhost_config_log_level
 extern int vhost_data_log_level;
+#define RTE_LOGTYPE_VHOST_DATA vhost_data_log_level
 
-#define VHOST_LOG_CONFIG(prefix, level, fmt, args...)		\
-	rte_log(RTE_LOG_ ## level, vhost_config_log_level,	\
-		"VHOST_CONFIG: (%s) " fmt, prefix, ##args)
+#define VHOST_CONFIG_LOG(prefix, level, ...) \
+	RTE_LOG_LINE_PREFIX(level, VHOST_CONFIG, "(%s) ", prefix, __VA_ARGS__)
 
-#define VHOST_LOG_DATA(prefix, level, fmt, args...)		\
-	(void)((RTE_LOG_ ## level <= RTE_LOG_DP_LEVEL) ?	\
-	 rte_log(RTE_LOG_ ## level,  vhost_data_log_level,	\
-		"VHOST_DATA: (%s) " fmt, prefix, ##args) :	\
-	 0)
+#define VHOST_DATA_LOG(prefix, level, ...) \
+	RTE_LOG_DP_LINE_PREFIX(level, VHOST_DATA, "(%s) ", prefix, __VA_ARGS__)
 
 #ifdef RTE_LIBRTE_VHOST_DEBUG
 #define VHOST_MAX_PRINT_BUFF 6072
@@ -702,7 +732,7 @@ extern int vhost_data_log_level;
 	} \
 	snprintf(packet + strnlen(packet, VHOST_MAX_PRINT_BUFF), VHOST_MAX_PRINT_BUFF - strnlen(packet, VHOST_MAX_PRINT_BUFF), "\n"); \
 	\
-	VHOST_LOG_DATA(device->ifname, DEBUG, "%s", packet); \
+	RTE_LOG_DP(DEBUG, VHOST_DATA, "(%s) %s", dev->ifname, packet); \
 } while (0)
 #else
 #define PRINT_PACKET(device, addr, size, header) do {} while (0)
@@ -830,7 +860,7 @@ get_device(int vid)
 		dev = vhost_devices[vid];
 
 	if (unlikely(!dev)) {
-		VHOST_LOG_CONFIG("device", ERR, "(%d) device not found.\n", vid);
+		VHOST_CONFIG_LOG("device", ERR, "(%d) device not found.", vid);
 	}
 
 	return dev;
@@ -869,22 +899,24 @@ void vhost_backend_cleanup(struct virtio_net *dev);
 
 uint64_t __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint64_t iova, uint64_t *len, uint8_t perm)
-	__rte_shared_locks_required(&vq->iotlb_lock);
+	__rte_requires_shared_capability(&vq->iotlb_lock);
 void *vhost_alloc_copy_ind_table(struct virtio_net *dev,
 			struct vhost_virtqueue *vq,
 			uint64_t desc_addr, uint64_t desc_len)
-	__rte_shared_locks_required(&vq->iotlb_lock);
+	__rte_requires_shared_capability(&vq->iotlb_lock);
 int vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
-	__rte_shared_locks_required(&vq->iotlb_lock);
+	__rte_requires_capability(&vq->access_lock)
+	__rte_requires_shared_capability(&vq->iotlb_lock);
 uint64_t translate_log_addr(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		uint64_t log_addr)
-	__rte_shared_locks_required(&vq->iotlb_lock);
-void vring_invalidate(struct virtio_net *dev, struct vhost_virtqueue *vq);
+	__rte_requires_shared_capability(&vq->iotlb_lock);
+void vring_invalidate(struct virtio_net *dev, struct vhost_virtqueue *vq)
+	__rte_requires_capability(&vq->access_lock);
 
 static __rte_always_inline uint64_t
 vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint64_t iova, uint64_t *len, uint8_t perm)
-	__rte_shared_locks_required(&vq->iotlb_lock)
+	__rte_requires_shared_capability(&vq->iotlb_lock)
 {
 	if (!(dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
 		return rte_vhost_va_from_guest_pa(dev->mem, iova, len);
@@ -963,8 +995,8 @@ vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 		vq->signalled_used = new;
 		vq->signalled_used_valid = true;
 
-		VHOST_LOG_DATA(dev->ifname, DEBUG,
-			"%s: used_event_idx=%d, old=%d, new=%d\n",
+		VHOST_DATA_LOG(dev->ifname, DEBUG,
+			"%s: used_event_idx=%d, old=%d, new=%d",
 			__func__, vhost_used_event(vq), old, new);
 
 		if (vhost_need_event(vhost_used_event(vq), new, old) ||
@@ -1062,6 +1094,6 @@ mbuf_is_consumed(struct rte_mbuf *m)
 	return true;
 }
 
-void mem_set_dump(void *ptr, size_t size, bool enable, uint64_t alignment);
+void mem_set_dump(struct virtio_net *dev, void *ptr, size_t size, bool enable, uint64_t alignment);
 
 #endif /* _VHOST_NET_CDEV_H_ */

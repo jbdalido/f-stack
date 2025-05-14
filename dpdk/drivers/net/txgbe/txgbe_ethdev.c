@@ -597,22 +597,23 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		return 0;
 	}
 
-	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	rte_atomic_store_explicit(&ad->link_thread_running, 0, rte_memory_order_seq_cst);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->back = pci_dev;
+	hw->port_id = eth_dev->data->port_id;
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
 		hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
 	} else {
-		u32 ssid;
+		u32 ssid = 0;
 
-		ssid = txgbe_flash_read_dword(hw, 0xFFFDC);
-		if (ssid == 0x1) {
+		err = txgbe_flash_read_dword(hw, 0xFFFDC, &ssid);
+		if (err) {
 			PMD_INIT_LOG(ERR,
 				"Read of internal subsystem device id failed");
 			return -ENODEV;
@@ -1542,6 +1543,7 @@ txgbe_dev_configure(struct rte_eth_dev *dev)
 	 * allocation Rx preconditions we will reset it.
 	 */
 	adapter->rx_bulk_alloc_allowed = true;
+	adapter->rx_vec_allowed = true;
 
 	return 0;
 }
@@ -1937,6 +1939,7 @@ txgbe_dev_stop(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	rte_eal_alarm_cancel(txgbe_dev_detect_sfp, dev);
+	rte_eal_alarm_cancel(txgbe_tx_queue_clear_error, dev);
 	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable interrupts */
@@ -2344,6 +2347,7 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
 	struct txgbe_stat_mappings *stat_mappings =
 			TXGBE_DEV_STAT_MAPPINGS(dev);
+	struct txgbe_tx_queue *txq;
 	uint32_t i, j;
 
 	txgbe_read_stats_registers(hw, hw_stats);
@@ -2398,6 +2402,11 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	/* Tx Errors */
 	stats->oerrors  = 0;
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		stats->oerrors += txq->desc_error;
+	}
+
 	return 0;
 }
 
@@ -2406,6 +2415,13 @@ txgbe_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
+	struct txgbe_tx_queue *txq;
+	uint32_t i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		txq->desc_error = 0;
+	}
 
 	/* HW registers are cleared on read */
 	hw->offset_loaded = 0;
@@ -2739,13 +2755,17 @@ txgbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 }
 
 const uint32_t *
-txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	if (dev->rx_pkt_burst == txgbe_recv_pkts ||
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+	    dev->rx_pkt_burst == txgbe_recv_pkts_vec ||
+	    dev->rx_pkt_burst == txgbe_recv_scattered_pkts_vec ||
+#endif
 	    dev->rx_pkt_burst == txgbe_recv_pkts_lro_single_alloc ||
 	    dev->rx_pkt_burst == txgbe_recv_pkts_lro_bulk_alloc ||
 	    dev->rx_pkt_burst == txgbe_recv_pkts_bulk_alloc)
-		return txgbe_get_supported_ptypes();
+		return txgbe_get_supported_ptypes(no_of_elements);
 
 	return NULL;
 }
@@ -2837,6 +2857,60 @@ txgbe_dev_setup_link_alarm_handler(void *param)
 	intr->flags &= ~TXGBE_FLAG_NEED_LINK_CONFIG;
 }
 
+static void
+txgbe_do_reset(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	struct txgbe_tx_queue *txq;
+	u32 i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		txq->resetting = true;
+	}
+
+	rte_delay_ms(1);
+	wr32(hw, TXGBE_RST, TXGBE_RST_LAN(hw->bus.lan_id));
+	txgbe_flush(hw);
+
+	PMD_DRV_LOG(ERR, "Please manually restart the port %d",
+		dev->data->port_id);
+}
+
+static void
+txgbe_tx_ring_recovery(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	u32 desc_error[4] = {0, 0, 0, 0};
+	struct txgbe_tx_queue *txq;
+	u32 i;
+
+	/* check tdm fatal error */
+	for (i = 0; i < 4; i++) {
+		desc_error[i] = rd32(hw, TXGBE_TDM_DESC_FATAL(i));
+		if (desc_error[i] != 0) {
+			PMD_DRV_LOG(ERR, "TDM fatal error reg[%d]: 0x%x", i, desc_error[i]);
+			txgbe_do_reset(dev);
+			return;
+		}
+	}
+
+	/* check tdm non-fatal error */
+	for (i = 0; i < 4; i++)
+		desc_error[i] = rd32(hw, TXGBE_TDM_DESC_NONFATAL(i));
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		if (desc_error[i / 32] & (1 << i % 32)) {
+			PMD_DRV_LOG(ERR, "TDM non-fatal error, reset port[%d] queue[%d]",
+				dev->data->port_id, i);
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+			txq = dev->data->tx_queues[i];
+			txq->resetting = true;
+			rte_eal_alarm_set(1000, txgbe_tx_queue_clear_error, (void *)dev);
+		}
+	}
+}
+
 /*
  * If @timeout_ms was 0, it means that it will not return until link complete.
  * It returns 1 on complete, return 0 on timeout.
@@ -2848,7 +2922,7 @@ txgbe_dev_wait_setup_link_complete(struct rte_eth_dev *dev, uint32_t timeout_ms)
 	struct txgbe_adapter *ad = TXGBE_DEV_ADAPTER(dev);
 	uint32_t timeout = timeout_ms ? timeout_ms : WARNING_TIMEOUT;
 
-	while (__atomic_load_n(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+	while (rte_atomic_load_explicit(&ad->link_thread_running, rte_memory_order_seq_cst)) {
 		msec_delay(1);
 		timeout--;
 
@@ -2873,7 +2947,7 @@ txgbe_dev_setup_link_thread_handler(void *param)
 
 	rte_thread_detach(rte_thread_self());
 	txgbe_dev_setup_link_alarm_handler(dev);
-	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	rte_atomic_store_explicit(&ad->link_thread_running, 0, rte_memory_order_seq_cst);
 	return 0;
 }
 
@@ -2923,7 +2997,8 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 		} else if (hw->phy.media_type == txgbe_media_type_fiber &&
 				dev->data->dev_conf.intr_conf.lsc != 0) {
 			txgbe_dev_wait_setup_link_complete(dev, 0);
-			if (!__atomic_test_and_set(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+			if (!rte_atomic_exchange_explicit(&ad->link_thread_running, 1,
+					rte_memory_order_seq_cst)) {
 				/* To avoid race condition between threads, set
 				 * the TXGBE_FLAG_NEED_LINK_CONFIG flag only
 				 * when there is no link thread running.
@@ -2933,7 +3008,8 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 						"txgbe-link",
 						txgbe_dev_setup_link_thread_handler, dev) < 0) {
 					PMD_DRV_LOG(ERR, "Create link thread failed!");
-					__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+					rte_atomic_store_explicit(&ad->link_thread_running, 0,
+							rte_memory_order_seq_cst);
 				}
 			} else {
 				PMD_DRV_LOG(ERR,
@@ -3093,6 +3169,7 @@ txgbe_dev_misc_interrupt_setup(struct rte_eth_dev *dev)
 	intr->mask |= mask;
 	intr->mask_misc |= TXGBE_ICRMISC_GPIO;
 	intr->mask_misc |= TXGBE_ICRMISC_ANDONE;
+	intr->mask_misc |= TXGBE_ICRMISC_TXDESC;
 	return 0;
 }
 
@@ -3187,6 +3264,9 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 
 	if (eicr & TXGBE_ICRMISC_HEAT)
 		intr->flags |= TXGBE_FLAG_OVERHEAT;
+
+	if (eicr & TXGBE_ICRMISC_TXDESC)
+		intr->flags |= TXGBE_FLAG_TX_DESC_ERR;
 
 	((u32 *)hw->isb_mem)[TXGBE_ISB_MISC] = 0;
 
@@ -3305,6 +3385,11 @@ txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 	if (intr->flags & TXGBE_FLAG_OVERHEAT) {
 		txgbe_dev_overheat(dev);
 		intr->flags &= ~TXGBE_FLAG_OVERHEAT;
+	}
+
+	if (intr->flags & TXGBE_FLAG_TX_DESC_ERR) {
+		txgbe_tx_ring_recovery(dev);
+		intr->flags &= ~TXGBE_FLAG_TX_DESC_ERR;
 	}
 
 	PMD_DRV_LOG(DEBUG, "enable intr immediately");

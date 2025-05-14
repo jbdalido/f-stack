@@ -85,8 +85,8 @@ test_blockcipher_one_case(const struct blockcipher_test_case *t,
 
 	int status = TEST_SUCCESS;
 	const struct blockcipher_test_data *tdata = t->test_data;
-	uint8_t cipher_key[tdata->cipher_key.len];
-	uint8_t auth_key[tdata->auth_key.len];
+	uint8_t *cipher_key = alloca(tdata->cipher_key.len);
+	uint8_t *auth_key = alloca(tdata->auth_key.len);
 	uint32_t buf_len = tdata->ciphertext.len;
 	uint32_t digest_len = tdata->digest.len;
 	char *buf_p = NULL;
@@ -1175,7 +1175,8 @@ sm4_cipheronly_setup(void)
 		RTE_CRYPTO_CIPHER_SM4_ECB,
 		RTE_CRYPTO_CIPHER_SM4_CTR,
 		RTE_CRYPTO_CIPHER_SM4_OFB,
-		RTE_CRYPTO_CIPHER_SM4_CFB
+		RTE_CRYPTO_CIPHER_SM4_CFB,
+		RTE_CRYPTO_CIPHER_SM4_XTS
 	};
 
 	rte_cryptodev_info_get(dev_id, &dev_info);

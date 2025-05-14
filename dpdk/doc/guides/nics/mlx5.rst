@@ -17,9 +17,10 @@ NVIDIA MLX5 Ethernet Driver
 The mlx5 Ethernet poll mode driver library (**librte_net_mlx5**) provides support
 for **NVIDIA ConnectX-4**, **NVIDIA ConnectX-4 Lx** , **NVIDIA ConnectX-5**,
 **NVIDIA ConnectX-6**, **NVIDIA ConnectX-6 Dx**, **NVIDIA ConnectX-6 Lx**,
-**NVIDIA ConnectX-7**, **NVIDIA BlueField**, **NVIDIA BlueField-2** and
-**NVIDIA BlueField-3** families of 10/25/40/50/100/200/400 Gb/s adapters
-as well as their virtual functions (VF) in SR-IOV context.
+**NVIDIA ConnectX-7**, **NVIDIA ConnectX-8**, **NVIDIA BlueField**,
+**NVIDIA BlueField-2** and **NVIDIA BlueField-3** families of
+10/25/40/50/100/200/400 Gb/s adapters as well as their virtual
+functions (VF) in SR-IOV context.
 
 Supported NICs
 --------------
@@ -34,6 +35,7 @@ The following NVIDIA device families are supported by the same mlx5 driver:
   - ConnectX-6 Dx
   - ConnectX-6 Lx
   - ConnectX-7
+  - ConnectX-8
   - BlueField
   - BlueField-2
   - BlueField-3
@@ -67,6 +69,7 @@ Below are detailed device names:
 * NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
 * NVIDIA\ |reg| ConnectX\ |reg|-6 Lx EN 25G MCX631102AN-ADAT (2x25G)
 * NVIDIA\ |reg| ConnectX\ |reg|-7 200G CX713106AE-HEA_QP1_Ax (2x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-8 400G C900-9X81Q-00CN-STQ_Ax (2x400G)
 * NVIDIA\ |reg| BlueField\ |reg|-2 25G MBF2H332A-AEEOT_A1 (2x25Gg
 * NVIDIA\ |reg| BlueField\ |reg|-3 200GbE 900-9D3B6-00CV-AA0 (2x200)
 * NVIDIA\ |reg| BlueField\ |reg|-3 200GbE 900-9D3B6-00SV-AA0 (2x200)
@@ -149,8 +152,10 @@ Features
 - Matching on Geneve TLV option header with raw encap/decap action.
 - Matching on ESP header SPI field.
 - Matching on InfiniBand BTH.
+- Matching on random value.
 - Modify IPv4/IPv6 ECN field.
 - Push or remove IPv6 routing extension.
+- NAT64.
 - RSS support in sample action.
 - E-Switch mirroring and jump.
 - E-Switch mirroring and modify.
@@ -167,6 +172,8 @@ Features
 - Sub-Function.
 - Matching on represented port.
 - Matching on aggregated affinity.
+- Matching on external Tx queue.
+- Matching on E-Switch manager.
 
 
 Limitations
@@ -186,6 +193,14 @@ Limitations
 
     - IPv4/TCP with CVLAN filtering
     - L4 steering rules for port RSS of UDP, TCP and IP
+
+- PCI Virtual Function MTU:
+
+  MTU settings on PCI Virtual Functions have no effect.
+  The maximum receivable packet size for a VF is determined by the MTU
+  configured on its associated Physical Function.
+  DPDK applications using VFs must be prepared to handle packets
+  up to the maximum size of this PF port.
 
 - For secondary process:
 
@@ -217,6 +232,12 @@ Limitations
   - When configuring host shaper with ``RTE_PMD_MLX5_HOST_SHAPER_FLAG_AVAIL_THRESH_TRIGGERED`` flag,
     only rates 0 and 100Mbps are supported.
 
+- Unified FDB:
+
+  - Jump FDB Rx is valid only when unified FDB is enabled,
+    as it is required to have FDB Rx/Tx.
+  - In unified FDB mode, the tag and RSS actions are only allowed in FDB Rx domain.
+
 - HW steering:
 
   - WQE based high scaling and safer flow insertion/destruction.
@@ -244,6 +265,8 @@ Limitations
 
   - Matching on ICMP6 following IPv6 routing extension header,
     should match ``ipv6_routing_ext_next_hdr`` instead of ICMP6.
+    IPv6 routing extension matching is not supported in flow template relaxed
+    matching mode (see ``struct rte_flow_pattern_template_attr::relaxed_matching``).
 
   - The supported actions order is as below::
 
@@ -264,6 +287,23 @@ Limitations
     c. Any encapsulation action, including the combination of RAW_ENCAP and RAW_DECAP actions
        which results in L3 encap.
     d. Only in transfer (switchdev) mode.
+
+  - MPLS:
+
+    - RTE_FLOW_ITEM_TYPE_MPLS matching is only supported with ``FLEX_PARSER_PROFILE_ENABLE = 1``.
+    - RTE_FLOW_ITEM_TYPE_MPLS matching is not supported on group 0.
+
+  - When using synchronous flow API,
+    the following limitations and considerations apply:
+
+    - Geneve options is supported when ``FLEX_PARSER_PROFILE_ENABLE`` = 0 (default).
+
+  - Template table with flags ``RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_WIRE_ORIG``
+    or ``RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_VPORT_ORIG``
+    cannot be created on group 0 (group 1 in practice),
+    since group 0 is created on startup in unified FDB domain.
+
+  - ``RTE_FLOW_ACTION_TYPE_MARK`` is not supported in FDB Tx domain.
 
 - When using Verbs flow engine (``dv_flow_en`` = 0), flow pattern without any
   specific VLAN will match for VLAN packets as well:
@@ -318,20 +358,25 @@ Limitations
   size and ``txq_inline_min`` settings and may be from 2 (worst case forced by maximal
   inline settings) to 58.
 
-- Match on VXLAN supports the following fields only:
+- Match on VXLAN supports any bits in the tunnel header
 
-     - VNI
-     - Last reserved 8-bits
+  - Flag 8-bits and first 24-bits reserved fields matching
+    is only supported when using DV flow engine (``dv_flow_en`` = 2).
+  - For ConnectX-5, the UDP destination port must be the standard one (4789).
+  - Default UDP destination is 4789 if not explicitly specified.
+  - Group zero's behavior may differ which depends on FW.
+  - User should set different flags when matching on VXLAN-GPE/GBP:
 
-  Last reserved 8-bits matching is only supported When using DV flow
-  engine (``dv_flow_en`` = 1).
-  For ConnectX-5, the UDP destination port must be the standard one (4789).
-  Group zero's behavior may differ which depends on FW.
-  Matching value equals 0 (value & mask) is not supported.
+    - for VXLAN-GPE - P flag
+    - for VXLAN-GBP - G flag
+
+- Matching on VXLAN-GPE header fields:
+
+     - ``rsvd0``/``rsvd1`` matching support depends on FW version
+       when using DV flow engine (``dv_flow_en`` = 1).
+     - ``protocol`` should be explicitly specified in HWS (``dv_flow_en`` = 2).
 
 - L3 VXLAN and VXLAN-GPE tunnels cannot be supported together with MPLSoGRE and MPLSoUDP.
-
-- MPLSoGRE is not supported in HW steering (``dv_flow_en`` = 2).
 
 - MPLSoUDP with multiple MPLS headers is only supported in HW steering (``dv_flow_en`` = 2).
 
@@ -349,11 +394,55 @@ Limitations
      - Length
      - Data
 
-  Only one Class/Type/Length Geneve TLV option is supported per shared device.
   Class/Type/Length fields must be specified as well as masks.
   Class/Type/Length specified masks must be full.
   Matching Geneve TLV option without specifying data is not supported.
   Matching Geneve TLV option with ``data & mask == 0`` is not supported.
+
+  In SW steering (``dv_flow_en`` = 1):
+
+     - Only one Class/Type/Length Geneve TLV option is supported per shared device.
+     - Supported only with ``FLEX_PARSER_PROFILE_ENABLE`` = 0.
+
+  In HW steering (``dv_flow_en`` = 2):
+
+     - Multiple Class/Type/Length Geneve TLV options are supported per physical device.
+     - Multiple of same Geneve TLV option isn't supported at the same pattern template.
+     - Supported only with ``FLEX_PARSER_PROFILE_ENABLE`` = 8.
+     - Supported also with ``FLEX_PARSER_PROFILE_ENABLE`` = 0 for single DW only.
+     - Supported for FW version **xx.37.0142** and above.
+
+  .. _geneve_parser_api:
+
+  - An API (``rte_pmd_mlx5_create_geneve_tlv_parser``)
+    is available for the flexible parser used in HW steering:
+
+    Each physical device has 7 DWs for GENEVE TLV options.
+    Partial option configuration is supported,
+    mask for data is provided in parser creation
+    indicating which DWs configuration is requested.
+    Only masked data DWs can be matched later as item field using flow API.
+
+    - Matching of ``type`` field is supported for each configured option.
+    - However, for matching ``class`` field,
+      the option should be configured with ``match_on_class_mode=2``.
+      One extra DW is consumed for it.
+    - Matching on ``length`` field is not supported.
+
+    - More limitations with ``FLEX_PARSER_PROFILE_ENABLE`` = 0:
+
+      - single DW
+      - ``sample_len`` must be equal to ``option_len`` and not bigger than 1.
+      - ``match_on_class_mode`` different than 1 is not supported.
+      - ``offset`` must be 0.
+
+    Although the parser is created per physical device, this API is port oriented.
+    Each port should call this API before using GENEVE OPT item,
+    but its configuration must use the same options list
+    with same internal order configured by first port.
+
+    Calling this API for different ports under same physical device doesn't consume
+    more DWs, the first one creates the parser and the rest use same configuration.
 
 - VF: flow rules created on VF devices can only match traffic targeted at the
   configured MAC addresses (see ``rte_eth_dev_mac_addr_add()``).
@@ -388,6 +477,31 @@ Limitations
     must be byte aligned (multiple of 8).
   - Modify field with flex item, the offset must be byte aligned (multiple of 8).
 
+- Match on random value:
+
+  - Supported only with HW Steering enabled (``dv_flow_en`` = 2).
+  - Supported only in table with ``nb_flows=1``.
+  - NIC ingress/egress flow in group 0 is not supported.
+  - Supports matching only 16 bits (LSB).
+
+- Match with compare result item (``RTE_FLOW_ITEM_TYPE_COMPARE``):
+
+  - Only supported in HW steering(``dv_flow_en`` = 2) mode.
+  - Only single flow is supported to the flow table.
+  - Only single item is supported per pattern template.
+  - In switch mode, when the ``repr_matching_en`` flag is enabled in the devargs
+    (which is the default setting),
+    the match with compare result item is not supported for ``ingress`` rules.
+    This is because an implicit ``REPRESENTED_PORT`` needs to be added to the matcher,
+    which conflicts with the single item limitation.
+  - Only 32-bit comparison is supported or 16-bit for random field.
+  - Only supported for ``RTE_FLOW_FIELD_META``, ``RTE_FLOW_FIELD_TAG``,
+    ``RTE_FLOW_FIELD_ESP_SEQ_NUM``,
+    ``RTE_FLOW_FIELD_RANDOM`` and ``RTE_FLOW_FIELD_VALUE``.
+  - The field type ``RTE_FLOW_FIELD_VALUE`` must be the base (``b``) field.
+  - The field type ``RTE_FLOW_FIELD_RANDOM`` can only be compared with
+    ``RTE_FLOW_FIELD_VALUE``.
+
 - No Tx metadata go to the E-Switch steering domain for the Flow group 0.
   The flows within group 0 and set metadata action are rejected by hardware.
 
@@ -411,9 +525,18 @@ Limitations
   cannot be used in conjunction with MPRQ
   since packets may be already attached to PMD-managed external buffers.
 
-- If Multi-Packet Rx queue is configured (``mprq_en``) and Rx CQE compression is
-  enabled (``rxq_cqe_comp_en``) at the same time, RSS hash result is not fully
-  supported. Some Rx packets may not have RTE_MBUF_F_RX_RSS_HASH.
+- RSS hash result limitations:
+
+  Full support is only available when hash RSS format is selected
+  as the current CQE compression format on the Rx side (``rxq_cqe_comp_en``).
+
+  Using any other format may result in some Rx packets
+  not having the ``RTE_MBUF_F_RX_RSS_HASH`` flag set.
+
+  When multi-packet Rx queue is enabled (``mprq_en``)
+  and Rx CQE compression is enabled (``rxq_cqe_comp_en``) simultaneously,
+  RSS hash result is not fully supported.
+  This is because the checksum format is selected by default in this configuration.
 
 - IPv6 Multicast messages are not supported on VM, while promiscuous mode
   and allmulticast mode are both set to off.
@@ -538,8 +661,7 @@ Limitations
 - CRC:
 
   - ``RTE_ETH_RX_OFFLOAD_KEEP_CRC`` cannot be supported with decapsulation
-    for some NICs (such as ConnectX-6 Dx, ConnectX-6 Lx, ConnectX-7, BlueField-2,
-    and BlueField-3).
+    for ConnectX-6 Dx, BlueField-2, and above.
     The capability bit ``scatter_fcs_w_decap_disable`` shows NIC support.
 
 - TX mbuf fast free:
@@ -581,10 +703,22 @@ Limitations
 
   - Supports the 'set' and 'add' operations for ``RTE_FLOW_ACTION_TYPE_MODIFY_FIELD`` action.
   - Modification of an arbitrary place in a packet via the special ``RTE_FLOW_FIELD_START`` Field ID is not supported.
-  - Modification of the MPLS header is supported only in HWS and only to copy from,
-    the encapsulation level is always 0.
-  - Modification of the 802.1Q Tag, VXLAN Network or GENEVE Network ID's is not supported.
-  - Encapsulation levels are not supported, can modify outermost header fields only.
+  - Modify field action using ``RTE_FLOW_FIELD_RANDOM`` is not supported.
+  - Modification of the 802.1Q tag is not supported.
+  - Modification of VXLAN network or GENEVE network ID is supported only for HW steering.
+  - Modification of the VXLAN header is supported with below limitations:
+
+    - Only for HW steering (``dv_flow_en=2``).
+    - Support VNI and the last reserved byte modifications for traffic
+      with default UDP destination port: 4789 for VXLAN and VXLAN-GBP, 4790 for VXLAN-GPE.
+
+  - Modification of GENEVE network ID is not supported when configured
+    ``FLEX_PARSER_PROFILE_ENABLE`` supports Geneve TLV options.
+    See :ref:`mlx5_firmware_config` for more flex parser information.
+  - Modification of GENEVE TLV option fields is supported only for HW steering.
+    Only DWs configured in :ref:`parser creation <geneve_parser_api>` can be modified,
+    'type' and 'class' fields can be modified when ``match_on_class_mode=2``.
+  - Modification of GENEVE TLV option data supports one DW per action.
   - Offsets cannot skip past the boundary of a field.
   - If the field type is ``RTE_FLOW_FIELD_MAC_TYPE``
     and packet contains one or more VLAN headers,
@@ -598,6 +732,34 @@ Limitations
   - For flow metadata fields (e.g. META or TAG)
     offset specifies the number of bits to skip from field's start,
     starting from LSB in the least significant byte, in the host order.
+  - Modification of the MPLS header is supported with some limitations:
+
+    - Only in HW steering.
+    - Only in ``src`` field.
+    - Only for outermost tunnel header (``level=2``).
+      For ``RTE_FLOW_FIELD_MPLS``,
+      the default encapsulation level ``0`` describes the outermost tunnel header.
+
+      .. note::
+
+         The default encapsulation level ``0`` describes
+         the "outermost that match is supported",
+         currently it is the first tunnel,
+         but it can be changed to outer when it is supported.
+
+  - Default encapsulation level ``0`` describes outermost.
+  - Encapsulation level ``2`` is supported with some limitations:
+
+    - Only in HW steering.
+    - Only in ``src`` field.
+    - ``RTE_FLOW_FIELD_VLAN_ID`` is not supported.
+    - ``RTE_FLOW_FIELD_IPV4_PROTO`` is not supported.
+    - ``RTE_FLOW_FIELD_IPV6_PROTO/DSCP/ECN`` are not supported.
+    - ``RTE_FLOW_FIELD_ESP_PROTO/SPI/SEQ_NUM`` are not supported.
+    - ``RTE_FLOW_FIELD_TCP_SEQ/ACK_NUM`` are not supported.
+    - Second tunnel fields are not supported.
+
+  - Encapsulation levels greater than ``2`` are not supported.
 
 - Age action:
 
@@ -639,10 +801,27 @@ Limitations
   - IPv6 routing header must be the only present extension.
   - Not supported on guest port.
 
+- NAT64 action:
+
+  - Supported only with HW Steering enabled (``dv_flow_en`` = 2).
+  - FW version: at least ``XX.39.1002``.
+  - Supported only on non-root table.
+  - Actions order limitation should follow the modify fields action.
+  - The last 2 TAG registers will be used implicitly in address backup mode.
+  - Even if the action can be shared, new steering entries will be created per flow rule.
+    It is recommended a single rule with NAT64 should be shared
+    to reduce the duplication of entries.
+    The default address and other fields conversion will be handled with NAT64 action.
+    To support other address, new rule(s) with modify fields on the IP addresses should be created.
+  - TOS / Traffic Class is not supported now.
+
 - Hairpin:
 
   - Hairpin between two ports could only manual binding and explicit Tx flow mode. For single port hairpin, all the combinations of auto/manual binding and explicit/implicit Tx flow mode could be supported.
   - Hairpin in switchdev SR-IOV mode is not supported till now.
+  - ``out_of_buffer`` statistics are not available on:
+    - NICs older than ConnectX-7.
+    - DPUs older than BlueField-3.
 
 - Quota:
 
@@ -728,7 +907,7 @@ Limitations
 
   - Cannot co-exist with ASO meter, ASO age action in a single flow rule.
   - Flow rules insertion rate and memory consumption need more optimization.
-  - 16 ports maximum.
+  - 16 ports maximum (with ``dv_flow_en=1``).
   - 32M connections maximum.
 
 - Multi-thread flow insertion:
@@ -774,7 +953,21 @@ Limitations
 
   Matching on checksum and sequence needs MLNX_OFED 5.6+.
 
+- Matching on NVGRE header:
+
+  - c_rc_k_s_rsvd0_ver
+  - protocol
+  - tni
+  - flow_id
+
+  In SW steering (``dv_flow_en`` = 1), only tni is supported.
+  In HW steering (``dv_flow_en`` = 2), all fields are supported.
+
 - The NIC egress flow rules on representor port are not supported.
+
+- In switch mode, flow rule matching ``RTE_FLOW_ACTION_TYPE_REPRESENTED_PORT`` item
+  with port ID ``UINT16_MAX`` means matching packets sent by E-Switch manager from software.
+  Need MLNX_OFED 24.04+.
 
 - A driver limitation for ``RTE_FLOW_ACTION_TYPE_PORT_REPRESENTOR`` action
   restricts the ``port_id`` configuration to only accept the value ``0xffff``,
@@ -811,6 +1004,74 @@ Extended statistics can be queried using ``rte_eth_xstats_get()``. The extended 
 Finally per-flow statistics can by queried using ``rte_flow_query`` when attaching a count action for specific flow. The flow counter counts the number of packets received successfully by the port and match the specific flow.
 
 
+Extended Statistics Counters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Send Scheduling Counters
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The mlx5 PMD provides a comprehensive set of counters designed for
+debugging and diagnostics related to packet scheduling during transmission.
+These counters are applicable only if the port was configured with the ``tx_pp`` devarg
+and reflect the status of the PMD scheduling infrastructure
+based on Clock and Rearm Queues, used as a workaround on ConnectX-6 DX NICs.
+
+``tx_pp_missed_interrupt_errors``
+  Indicates that the Rearm Queue interrupt was not serviced on time.
+  The EAL manages interrupts in a dedicated thread,
+  and it is possible that other time-consuming actions were being processed concurrently.
+
+``tx_pp_rearm_queue_errors``
+  Signifies hardware errors that occurred on the Rearm Queue,
+  typically caused by delays in servicing interrupts.
+
+``tx_pp_clock_queue_errors``
+  Reflects hardware errors on the Clock Queue,
+  which usually indicate configuration issues
+  or problems with the internal NIC hardware or firmware.
+
+``tx_pp_timestamp_past_errors``
+  Tracks the application attempted to send packets with timestamps set in the past.
+  It is useful for debugging application code
+  and does not indicate a malfunction of the PMD.
+
+``tx_pp_timestamp_future_errors``
+  Records attempts by the application to send packets
+  with timestamps set too far into the future,
+  exceeding the hardware’s scheduling capabilities.
+  Like the previous counter, it aids in application debugging
+  without suggesting a PMD malfunction.
+
+``tx_pp_jitter``
+  Measures the internal NIC real-time clock jitter estimation
+  between two consecutive Clock Queue completions, expressed in nanoseconds.
+  Significant jitter may signal potential clock synchronization issues,
+  possibly due to inappropriate adjustments
+  made by a system PTP (Precision Time Protocol) agent.
+
+``tx_pp_wander``
+  Indicates the long-term stability of the internal NIC real-time clock
+  over 2^24 completions, measured in nanoseconds.
+  Significant wander may also suggest clock synchronization problems.
+
+``tx_pp_sync_lost``
+  A general operational indicator;
+  a non-zero value indicates that the driver has lost synchronization with the Clock Queue,
+  resulting in improper scheduling operations.
+  To restore correct scheduling functionality, it is necessary to restart the port.
+
+The following counters are particularly valuable for verifying and debugging application code.
+They do not indicate driver or hardware malfunctions
+and are applicable to newer hardware with direct on-time scheduling capabilities
+(such as ConnectX-7 and above):
+
+``tx_pp_timestamp_order_errors``
+  Indicates attempts by the application to send packets
+  with timestamps that are not in strictly ascending order.
+  Since the PMD does not reorder packets within hardware queues,
+  violations of timestamp order can lead to packets being sent at incorrect times.
+
+
 Compilation
 -----------
 
@@ -835,6 +1096,20 @@ Runtime Configuration
 
 Please refer to :ref:`mlx5 common options <mlx5_common_driver_options>`
 for an additional list of options shared with other mlx5 drivers.
+
+- ``probe_opt_en`` parameter [int]
+
+  A non-zero value optimizes the probing process, especially for large scale.
+  The PMD will hold the IB device information internally and reuse it.
+
+  By default, the PMD will set this value to 0.
+
+  .. note::
+
+    There is a race condition in probing port if ``probe_opt_en`` is enabled.
+    Port probing may fail with a wrong ifindex in cache
+    while the interrupt thread is updating the cache.
+    Please try again if port probing failed.
 
 - ``rxq_cqe_comp_en`` parameter [int]
 
@@ -862,9 +1137,9 @@ for an additional list of options shared with other mlx5 drivers.
   Supported on:
 
   - x86_64 with ConnectX-4, ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
   - POWER9 and ARMv8 with ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7 BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
 
 - ``rxq_pkt_pad_en`` parameter [int]
 
@@ -877,9 +1152,9 @@ for an additional list of options shared with other mlx5 drivers.
   Supported on:
 
   - x86_64 with ConnectX-4, ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
   - POWER8 and ARMv8 with ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
 
 - ``delay_drop`` parameter [int]
 
@@ -1116,9 +1391,8 @@ for an additional list of options shared with other mlx5 drivers.
 
 - ``txq_mpw_en`` parameter [int]
 
-  A nonzero value enables Enhanced Multi-Packet Write (eMPW) for ConnectX-5,
-  ConnectX-6, ConnectX-6 Dx, ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2
-  BlueField-3. eMPW allows the Tx burst function to pack up multiple packets
+  A nonzero value enables Enhanced Multi-Packet Write (eMPW) for NICs starting
+  ConnectX-5, and BlueField. eMPW allows the Tx burst function to pack up multiple packets
   in a single descriptor session in order to save PCI bandwidth
   and improve performance at the cost of a slightly higher CPU usage.
   When ``txq_inline_mpw`` is set along with ``txq_mpw_en``,
@@ -1162,8 +1436,7 @@ for an additional list of options shared with other mlx5 drivers.
 
 - ``tx_vec_en`` parameter [int]
 
-  A nonzero value enables Tx vector on ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-  ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3 NICs
+  A nonzero value enables Tx vector with ConnectX-5 NICs and above.
   if the number of global Tx queues on the port is less than ``txqs_max_vec``.
   The parameter is deprecated and ignored.
 
@@ -1204,7 +1477,8 @@ for an additional list of options shared with other mlx5 drivers.
     ``META`` related actions and items operate only within NIC Tx and
     NIC Rx steering domains, no ``MARK`` and ``META`` information crosses
     the domain boundaries. The ``MARK`` item is 24 bits wide, the ``META``
-    item is 32 bits wide and match supported on egress only.
+    item is 32 bits wide and match supported on egress only
+    when ``dv_flow_en`` = 1.
 
   - 1, this engages extensive metadata mode, the ``MARK`` and ``META``
     related actions and items operate within all supported steering domains,
@@ -1472,6 +1746,8 @@ entities on the HCA.
 With this configuration, mlx5 PMD supports:
 
 - matching traffic coming from physical port, PF, VF or SF using REPRESENTED_PORT items;
+- matching traffic coming from E-Switch manager
+  using REPRESENTED_PORT item with port ID ``UINT16_MAX``;
 - forwarding traffic to physical port, PF, VF or SF using REPRESENTED_PORT actions;
 
 Requirements
@@ -2284,6 +2560,12 @@ Steps to enable Tx datapath tracing:
 
    The parameter of the script is the trace data folder.
 
+   The optional parameter ``-a`` forces to dump incomplete bursts.
+
+   The optional parameter ``-v [level]`` forces to dump raw records data
+   for the specified level and below.
+   Level 0 dumps bursts, level 1 dumps WQEs, level 2 dumps mbufs.
+
    .. code-block:: console
 
       mlx5_trace.py /var/log/rte-2023-01-23-AM-11-52-39
@@ -2454,6 +2736,19 @@ where:
   This range is the highest 1000 numbers.
 * ``hw_queue_id``: queue index given by HW in queue creation.
 
+
+Dump RQ/SQ/CQ HW context for debug purposes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dump RQ/CQ HW context for a given port/queue to a file::
+
+   testpmd> mlx5 port (port_id) queue (queue_id) dump rq_context (file_name)
+
+Dump SQ/CQ HW context for a given port/queue to a file::
+
+   testpmd> mlx5 port (port_id) queue (queue_id) dump sq_context (file_name)
+
+
 Set Flow Engine Mode
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -2468,3 +2763,95 @@ This command is used for testing live migration,
 and works for software steering only.
 Default FDB jump should be disabled if switchdev is enabled.
 The mode will propagate to all the probed ports.
+
+
+GENEVE TLV options parser
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+See the :ref:`GENEVE parser API <geneve_parser_api>` for more information.
+
+Set
+^^^
+
+Add single option to the global option list::
+
+   testpmd> mlx5 set tlv_option class (class) type (type) len (length) \
+            offset (sample_offset) sample_len (sample_len) \
+            class_mode (ignore|fixed|matchable) data (0xffffffff|0x0 [0xffffffff|0x0]*)
+
+where:
+
+* ``class``: option class.
+* ``type``: option type.
+* ``length``: option data length in 4 bytes granularity.
+* ``sample_offset``: offset to data list related to option data start.
+  The offset is in 4 bytes granularity.
+* ``sample_len``: length data list in 4 bytes granularity.
+* ``ignore``: ignore ``class`` field.
+* ``fixed``: option class is fixed and defines the option along with the type.
+* ``matchable``: ``class`` field is matchable.
+* ``data``: list of masks indicating which DW should be configure.
+  The size of list should be equal to ``sample_len``.
+* ``0xffffffff``: this DW should be configure.
+* ``0x0``: this DW shouldn't be configure.
+
+Flush
+^^^^^
+
+Remove several options from the global option list::
+
+   testpmd> mlx5 flush tlv_options max (nb_option)
+
+where:
+
+* ``nb_option``: maximum number of option to remove from list. The order is LIFO.
+
+List
+^^^^
+
+Print all options which are set in the global option list so far::
+
+   testpmd> mlx5 list tlv_options
+
+Output contains the values of each option, one per line.
+There is no output at all when no options are configured on the global list::
+
+   ID      Type    Class   Class_mode   Len     Offset  Sample_len   Data
+   [...]   [...]   [...]   [...]        [...]   [...]   [...]        [...]
+
+Setting several options and listing them::
+
+   testpmd> mlx5 set tlv_option class 1 type 1 len 4 offset 1 sample_len 3
+            class_mode fixed data 0xffffffff 0x0 0xffffffff
+   testpmd: set new option in global list, now it has 1 options
+   testpmd> mlx5 set tlv_option class 1 type 2 len 2 offset 0 sample_len 2
+            class_mode fixed data 0xffffffff 0xffffffff
+   testpmd: set new option in global list, now it has 2 options
+   testpmd> mlx5 set tlv_option class 1 type 3 len 5 offset 4 sample_len 1
+            class_mode fixed data 0xffffffff
+   testpmd: set new option in global list, now it has 3 options
+   testpmd> mlx5 list tlv_options
+   ID      Type    Class   Class_mode   Len    Offset  Sample_len  Data
+   0       1       1       fixed        4      1       3           0xffffffff 0x0 0xffffffff
+   1       2       1       fixed        2      0       2           0xffffffff 0xffffffff
+   2       3       1       fixed        5      4       1           0xffffffff
+   testpmd>
+
+Apply
+^^^^^
+
+Create GENEVE TLV parser for specific port using option list which are set so far::
+
+   testpmd> mlx5 port (port_id) apply tlv_options
+
+The same global option list can used by several ports.
+
+Destroy
+^^^^^^^
+
+Destroy GENEVE TLV parser for specific port::
+
+   testpmd> mlx5 port (port_id) destroy tlv_options
+
+This command doesn't destroy the global list,
+For releasing options, ``flush`` command should be used.

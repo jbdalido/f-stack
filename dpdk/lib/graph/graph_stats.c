@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#include <eal_export.h>
 #include <rte_common.h>
 #include <rte_errno.h>
 #include <rte_malloc.h>
@@ -28,7 +29,7 @@ struct cluster_node {
 	struct rte_node *nodes[];
 };
 
-struct rte_graph_cluster_stats {
+struct __rte_cache_aligned rte_graph_cluster_stats {
 	/* Header */
 	rte_graph_cluster_stats_cb_t fn;
 	uint32_t cluster_node_size; /* Size of struct cluster_node */
@@ -39,7 +40,7 @@ struct rte_graph_cluster_stats {
 	size_t sz;
 
 	struct cluster_node clusters[];
-} __rte_cache_aligned;
+};
 
 #define boarder_model_dispatch()                                                              \
 	fprintf(f, "+-------------------------------+---------------+--------" \
@@ -121,6 +122,25 @@ print_node(FILE *f, const struct rte_graph_cluster_node_stats *stat, bool dispat
 	}
 }
 
+static inline void
+print_xstat(FILE *f, const struct rte_graph_cluster_node_stats *stat, bool dispatch)
+{
+	int i;
+
+	if (dispatch) {
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			fprintf(f,
+				"|\t%-24s|%15s|%-15" PRIu64 "|%15s|%15s|%15s|%15s|%15s|%11.4s|\n",
+				stat->xstat_desc[i], "", stat->xstat_count[i], "", "", "", "", "",
+				"");
+	} else {
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			fprintf(f,
+				"|\t%-24s|%15s|%-15" PRIu64 "|%15s|%15.3s|%15.6s|%11.4s|\n",
+				stat->xstat_desc[i], "", stat->xstat_count[i], "", "", "", "");
+	}
+}
+
 static int
 graph_cluster_stats_cb(bool dispatch, bool is_first, bool is_last, void *cookie,
 		       const struct rte_graph_cluster_node_stats *stat)
@@ -129,8 +149,11 @@ graph_cluster_stats_cb(bool dispatch, bool is_first, bool is_last, void *cookie,
 
 	if (unlikely(is_first))
 		print_banner(f, dispatch);
-	if (stat->objs)
+	if (stat->objs) {
 		print_node(f, stat, dispatch);
+		if (stat->xstat_cntrs)
+			print_xstat(f, stat, dispatch);
+	}
 	if (unlikely(is_last)) {
 		if (dispatch)
 			boarder_model_dispatch();
@@ -203,6 +226,7 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 	struct cluster_node *cluster;
 	struct rte_node *node;
 	rte_node_t count;
+	uint8_t i;
 
 	cluster = stats->clusters;
 
@@ -240,6 +264,36 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 		SET_ERR_JMP(ENOENT, free, "Failed to find node %s in graph %s",
 			    graph_node->node->name, graph->name);
 	cluster->nodes[cluster->nb_nodes++] = node;
+	if (graph_node->node->xstats) {
+		cluster->stat.xstat_cntrs = graph_node->node->xstats->nb_xstats;
+		cluster->stat.xstat_count = rte_zmalloc_socket(NULL,
+			sizeof(uint64_t) * graph_node->node->xstats->nb_xstats,
+			RTE_CACHE_LINE_SIZE, stats->socket_id);
+		if (cluster->stat.xstat_count == NULL)
+			SET_ERR_JMP(ENOMEM, free, "Failed to allocate memory node %s graph %s",
+				    graph_node->node->name, graph->name);
+
+		cluster->stat.xstat_desc = rte_zmalloc_socket(NULL,
+			sizeof(RTE_NODE_XSTAT_DESC_SIZE) * graph_node->node->xstats->nb_xstats,
+			RTE_CACHE_LINE_SIZE, stats->socket_id);
+		if (cluster->stat.xstat_desc == NULL) {
+			rte_free(cluster->stat.xstat_count);
+			SET_ERR_JMP(ENOMEM, free, "Failed to allocate memory node %s graph %s",
+				    graph_node->node->name, graph->name);
+		}
+
+		for (i = 0; i < cluster->stat.xstat_cntrs; i++) {
+			if (rte_strscpy(cluster->stat.xstat_desc[i],
+					graph_node->node->xstats->xstat_desc[i],
+					RTE_NODE_XSTAT_DESC_SIZE) < 0) {
+				rte_free(cluster->stat.xstat_count);
+				rte_free(cluster->stat.xstat_desc);
+				SET_ERR_JMP(E2BIG, free,
+					    "Error description overflow node %s graph %s",
+					    graph_node->node->name, graph->name);
+			}
+		}
+	}
 
 	stats->sz += stats->cluster_node_size;
 	stats->max_nodes++;
@@ -322,6 +376,7 @@ fail:
 	return -rte_errno;
 }
 
+RTE_EXPORT_SYMBOL(rte_graph_cluster_stats_create)
 struct rte_graph_cluster_stats *
 rte_graph_cluster_stats_create(const struct rte_graph_cluster_stats_param *prm)
 {
@@ -385,9 +440,22 @@ fail:
 	return rc;
 }
 
+RTE_EXPORT_SYMBOL(rte_graph_cluster_stats_destroy)
 void
 rte_graph_cluster_stats_destroy(struct rte_graph_cluster_stats *stat)
 {
+	struct cluster_node *cluster;
+	rte_node_t count;
+
+	cluster = stat->clusters;
+	for (count = 0; count < stat->max_nodes; count++) {
+		if (cluster->stat.xstat_cntrs) {
+			rte_free(cluster->stat.xstat_count);
+			rte_free(cluster->stat.xstat_desc);
+		}
+
+		cluster = RTE_PTR_ADD(cluster, stat->cluster_node_size);
+	}
 	return rte_free(stat);
 }
 
@@ -399,7 +467,10 @@ cluster_node_arregate_stats(struct cluster_node *cluster, bool dispatch)
 	uint64_t sched_objs = 0, sched_fail = 0;
 	struct rte_node *node;
 	rte_node_t count;
+	uint64_t *xstat;
+	uint8_t i;
 
+	memset(stat->xstat_count, 0, sizeof(uint64_t) * stat->xstat_cntrs);
 	for (count = 0; count < cluster->nb_nodes; count++) {
 		node = cluster->nodes[count];
 
@@ -412,6 +483,12 @@ cluster_node_arregate_stats(struct cluster_node *cluster, bool dispatch)
 		objs += node->total_objs;
 		cycles += node->total_cycles;
 		realloc_count += node->realloc_count;
+
+		if (node->xstat_off == 0)
+			continue;
+		xstat = RTE_PTR_ADD(node, node->xstat_off);
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			stat->xstat_count[i] += xstat[i];
 	}
 
 	stat->calls = calls;
@@ -438,6 +515,7 @@ cluster_node_store_prev_stats(struct cluster_node *cluster)
 	stat->prev_cycles = stat->cycles;
 }
 
+RTE_EXPORT_SYMBOL(rte_graph_cluster_stats_get)
 void
 rte_graph_cluster_stats_get(struct rte_graph_cluster_stats *stat, bool skip_cb)
 {
@@ -459,11 +537,13 @@ rte_graph_cluster_stats_get(struct rte_graph_cluster_stats *stat, bool skip_cb)
 	}
 }
 
+RTE_EXPORT_SYMBOL(rte_graph_cluster_stats_reset)
 void
 rte_graph_cluster_stats_reset(struct rte_graph_cluster_stats *stat)
 {
 	struct cluster_node *cluster;
 	rte_node_t count;
+	uint8_t i;
 
 	cluster = stat->clusters;
 
@@ -479,6 +559,8 @@ rte_graph_cluster_stats_reset(struct rte_graph_cluster_stats *stat)
 		node->prev_objs = 0;
 		node->prev_cycles = 0;
 		node->realloc_count = 0;
+		for (i = 0; i < node->xstat_cntrs; i++)
+			node->xstat_count[i] = 0;
 		cluster = RTE_PTR_ADD(cluster, stat->cluster_node_size);
 	}
 }

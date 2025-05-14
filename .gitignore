@@ -1,3 +1,5 @@
+# Bazel symlinks
+bazel-*
 *~
 *.a
 *.core

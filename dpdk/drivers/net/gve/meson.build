@@ -15,5 +15,8 @@ sources = files(
         'gve_tx_dqo.c',
         'gve_ethdev.c',
         'gve_version.c',
+        'gve_rss.c',
 )
 includes += include_directories('base')
+
+cflags += no_wvla_cflag

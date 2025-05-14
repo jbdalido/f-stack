@@ -44,7 +44,7 @@ Compilation of the DPDK
 
 *   Python 3.6 or later.
 
-*   Meson (version 0.53.2+) and ninja
+*   Meson (version 0.57+) and ninja
 
     * ``meson`` & ``ninja-build`` packages in most Linux distributions
     * If the packaged version is below the minimum version, the latest versions
@@ -71,8 +71,7 @@ Compilation of the DPDK
 
 **Optional Tools:**
 
-*   Intel\ |reg| C++ Compiler (icc). For installation, additional libraries may be required.
-    See the icc Installation Guide found in the Documentation directory under the compiler installation.
+*   Intel\ |reg| oneAPI DPC++/C++ Compiler.
 
 *   IBM\ |reg| Advance ToolChain for Powerlinux. This is a set of open source development tools and runtime libraries
     which allows users to take leading edge advantage of IBM's latest POWER hardware features on Linux. To install
@@ -106,7 +105,7 @@ System Software
 
 **Required:**
 
-*   Kernel version >= 4.14
+*   Kernel version >= 4.19
 
     The kernel version required is based on the oldest long term stable kernel available
     at kernel.org when the DPDK version is in development.

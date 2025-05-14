@@ -3,11 +3,14 @@
  */
 #include <string.h>
 
+#include <eal_export.h>
 #include <rte_ip_frag.h>
 #include <rte_cycles.h>
 #include <rte_log.h>
 
 #include "rte_port_ras.h"
+
+#include "port_log.h"
 
 #ifndef RTE_PORT_RAS_N_BUCKETS
 #define RTE_PORT_RAS_N_BUCKETS                                 4094
@@ -69,16 +72,16 @@ rte_port_ring_writer_ras_create(void *params, int socket_id, int is_ipv4)
 
 	/* Check input parameters */
 	if (conf == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Parameter conf is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: Parameter conf is NULL", __func__);
 		return NULL;
 	}
 	if (conf->ring == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Parameter ring is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: Parameter ring is NULL", __func__);
 		return NULL;
 	}
 	if ((conf->tx_burst_sz == 0) ||
 	    (conf->tx_burst_sz > RTE_PORT_IN_BURST_SIZE_MAX)) {
-		RTE_LOG(ERR, PORT, "%s: Parameter tx_burst_sz is invalid\n",
+		PORT_LOG(ERR, "%s: Parameter tx_burst_sz is invalid",
 			__func__);
 		return NULL;
 	}
@@ -87,7 +90,7 @@ rte_port_ring_writer_ras_create(void *params, int socket_id, int is_ipv4)
 	port = rte_zmalloc_socket("PORT", sizeof(*port),
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Failed to allocate socket\n", __func__);
+		PORT_LOG(ERR, "%s: Failed to allocate socket", __func__);
 		return NULL;
 	}
 
@@ -103,7 +106,7 @@ rte_port_ring_writer_ras_create(void *params, int socket_id, int is_ipv4)
 		socket_id);
 
 	if (port->frag_tbl == NULL) {
-		RTE_LOG(ERR, PORT, "%s: rte_ip_frag_table_create failed\n",
+		PORT_LOG(ERR, "%s: rte_ip_frag_table_create failed",
 			__func__);
 		rte_free(port);
 		return NULL;
@@ -282,7 +285,7 @@ rte_port_ring_writer_ras_free(void *port)
 			port;
 
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Parameter port is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: Parameter port is NULL", __func__);
 		return -1;
 	}
 
@@ -312,6 +315,7 @@ rte_port_ras_writer_stats_read(void *port,
 /*
  * Summary of port operations
  */
+RTE_EXPORT_SYMBOL(rte_port_ring_writer_ipv4_ras_ops)
 struct rte_port_out_ops rte_port_ring_writer_ipv4_ras_ops = {
 	.f_create = rte_port_ring_writer_ipv4_ras_create,
 	.f_free = rte_port_ring_writer_ras_free,
@@ -321,6 +325,7 @@ struct rte_port_out_ops rte_port_ring_writer_ipv4_ras_ops = {
 	.f_stats = rte_port_ras_writer_stats_read,
 };
 
+RTE_EXPORT_SYMBOL(rte_port_ring_writer_ipv6_ras_ops)
 struct rte_port_out_ops rte_port_ring_writer_ipv6_ras_ops = {
 	.f_create = rte_port_ring_writer_ipv6_ras_create,
 	.f_free = rte_port_ring_writer_ras_free,

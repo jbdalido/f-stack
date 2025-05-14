@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/queue.h>
 
+#include <eal_export.h>
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
@@ -416,7 +417,7 @@ mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	return (__atomic_load_n(&rxq->refcnt, __ATOMIC_RELAXED) == 1);
+	return (rte_atomic_load_explicit(&rxq->refcnt, rte_memory_order_relaxed) == 1);
 }
 
 /* Fetches and drops all SW-owned and error CQEs to synchronize CQ. */
@@ -1037,6 +1038,7 @@ mlx5_rx_hairpin_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
+	rte_atomic_fetch_add_explicit(&rxq_ctrl->ctrl_ref, 1, rte_memory_order_relaxed);
 	DRV_LOG(DEBUG, "port %u adding hairpin Rx queue %u to list",
 		dev->data->port_id, idx);
 	dev->data->rx_queues[idx] = &rxq_ctrl->rxq;
@@ -1315,6 +1317,42 @@ mlx5_rxq_obj_verify(struct rte_eth_dev *dev)
 }
 
 /**
+ * Destroy all queue counters.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_q_counters_destroy(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	unsigned int i;
+
+	/* Destroy port q counter */
+	if (priv->q_counters) {
+		mlx5_devx_cmd_destroy(priv->q_counters);
+		priv->q_counters = NULL;
+	}
+
+	/* Destroy port global hairpin q counter */
+	if (priv->q_counter_hairpin) {
+		mlx5_devx_cmd_destroy(priv->q_counter_hairpin);
+		priv->q_counter_hairpin = NULL;
+	}
+
+	/* Destroy per hairpin queue counter */
+	for (i = 0; i != priv->rxqs_n; ++i) {
+		struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, i);
+
+		if (rxq == NULL || rxq->q_counter == NULL)
+			continue;
+
+		mlx5_devx_cmd_destroy(rxq->q_counter);
+		rxq->q_counter = NULL;
+	}
+}
+
+/**
  * Callback function to initialize mbufs for Multi-Packet RQ.
  */
 static inline void
@@ -1328,7 +1366,7 @@ mlx5_mprq_buf_init(struct rte_mempool *mp, void *opaque_arg,
 
 	memset(_m, 0, sizeof(*buf));
 	buf->mp = mp;
-	__atomic_store_n(&buf->refcnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_store_explicit(&buf->refcnt, 1, rte_memory_order_relaxed);
 	for (j = 0; j != strd_n; ++j) {
 		shinfo = &buf->shinfos[j];
 		shinfo->free_cb = mlx5_mprq_buf_free_cb;
@@ -1453,7 +1491,7 @@ mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 	/*
 	 * rte_mempool_create_empty() has sanity check to refuse large cache
 	 * size compared to the number of elements.
-	 * CACHE_FLUSHTHRESH_MULTIPLIER is defined in a C file, so using a
+	 * CALC_CACHE_FLUSHTHRESH() is defined in a C file, so using a
 	 * constant number 2 instead.
 	 */
 	obj_num = RTE_MAX(obj_num, MLX5_MPRQ_MP_CACHE_SZ * 2);
@@ -1963,16 +2001,16 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	tmpl->rxq.mp = rx_seg[0].mp;
 	tmpl->rxq.elts_n = log2above(desc);
 	tmpl->rxq.rq_repl_thresh = MLX5_VPMD_RXQ_RPLNSH_THRESH(desc_n);
-	tmpl->rxq.elts = (struct rte_mbuf *(*)[desc_n])(tmpl + 1);
-	tmpl->rxq.mprq_bufs =
-		(struct mlx5_mprq_buf *(*)[desc])(*tmpl->rxq.elts + desc_n);
+	tmpl->rxq.elts = (struct rte_mbuf *(*)[])(tmpl + 1);
+	tmpl->rxq.mprq_bufs = (struct mlx5_mprq_buf *(*)[])(*tmpl->rxq.elts + desc_n);
 	tmpl->rxq.idx = idx;
 	if (conf->share_group > 0) {
 		tmpl->rxq.shared = 1;
 		tmpl->share_group = conf->share_group;
 		tmpl->share_qid = conf->share_qid;
+		LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
 	}
-	LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
+	LIST_INSERT_HEAD(&priv->rxqsctrl, tmpl, next);
 	rte_atomic_store_explicit(&tmpl->ctrl_ref, 1, rte_memory_order_relaxed);
 	return tmpl;
 error:
@@ -2026,7 +2064,7 @@ mlx5_rxq_hairpin_new(struct rte_eth_dev *dev, struct mlx5_rxq_priv *rxq,
 	tmpl->rxq.idx = idx;
 	rxq->hairpin_conf = *hairpin_conf;
 	mlx5_rxq_ref(dev, idx);
-	LIST_INSERT_HEAD(&priv->sh->shared_rxqs, tmpl, share_entry);
+	LIST_INSERT_HEAD(&priv->rxqsctrl, tmpl, next);
 	rte_atomic_store_explicit(&tmpl->ctrl_ref, 1, rte_memory_order_relaxed);
 	return tmpl;
 }
@@ -2048,7 +2086,7 @@ mlx5_rxq_ref(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_rxq_priv *rxq = mlx5_rxq_get(dev, idx);
 
 	if (rxq != NULL)
-		__atomic_fetch_add(&rxq->refcnt, 1, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&rxq->refcnt, 1, rte_memory_order_relaxed);
 	return rxq;
 }
 
@@ -2070,7 +2108,7 @@ mlx5_rxq_deref(struct rte_eth_dev *dev, uint16_t idx)
 
 	if (rxq == NULL)
 		return 0;
-	return __atomic_fetch_sub(&rxq->refcnt, 1, __ATOMIC_RELAXED) - 1;
+	return rte_atomic_fetch_sub_explicit(&rxq->refcnt, 1, rte_memory_order_relaxed) - 1;
 }
 
 /**
@@ -2144,12 +2182,12 @@ mlx5_rxq_data_get(struct rte_eth_dev *dev, uint16_t idx)
  * @return
  *   A pointer to the queue if it exists, NULL otherwise.
  */
-struct mlx5_external_rxq *
+struct mlx5_external_q *
 mlx5_ext_rxq_ref(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct mlx5_external_rxq *rxq = mlx5_ext_rxq_get(dev, idx);
+	struct mlx5_external_q *rxq = mlx5_ext_rxq_get(dev, idx);
 
-	__atomic_fetch_add(&rxq->refcnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&rxq->refcnt, 1, rte_memory_order_relaxed);
 	return rxq;
 }
 
@@ -2167,9 +2205,9 @@ mlx5_ext_rxq_ref(struct rte_eth_dev *dev, uint16_t idx)
 uint32_t
 mlx5_ext_rxq_deref(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct mlx5_external_rxq *rxq = mlx5_ext_rxq_get(dev, idx);
+	struct mlx5_external_q *rxq = mlx5_ext_rxq_get(dev, idx);
 
-	return __atomic_fetch_sub(&rxq->refcnt, 1, __ATOMIC_RELAXED) - 1;
+	return rte_atomic_fetch_sub_explicit(&rxq->refcnt, 1, rte_memory_order_relaxed) - 1;
 }
 
 /**
@@ -2183,7 +2221,7 @@ mlx5_ext_rxq_deref(struct rte_eth_dev *dev, uint16_t idx)
  * @return
  *   A pointer to the queue if it exists, NULL otherwise.
  */
-struct mlx5_external_rxq *
+struct mlx5_external_q *
 mlx5_ext_rxq_get(struct rte_eth_dev *dev, uint16_t idx)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
@@ -2301,7 +2339,9 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 			if (!rxq_ctrl->is_hairpin)
 				mlx5_mr_btree_free
 					(&rxq_ctrl->rxq.mr_ctrl.cache_bh);
-			LIST_REMOVE(rxq_ctrl, share_entry);
+			if (rxq_ctrl->rxq.shared)
+				LIST_REMOVE(rxq_ctrl, share_entry);
+			LIST_REMOVE(rxq_ctrl, next);
 			mlx5_free(rxq_ctrl);
 		}
 		dev->data->rx_queues[idx] = NULL;
@@ -2327,7 +2367,7 @@ mlx5_rxq_verify(struct rte_eth_dev *dev)
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 	int ret = 0;
 
-	LIST_FOREACH(rxq_ctrl, &priv->sh->shared_rxqs, share_entry) {
+	LIST_FOREACH(rxq_ctrl, &priv->rxqsctrl, next) {
 		DRV_LOG(DEBUG, "port %u Rx Queue %u still referenced",
 			dev->data->port_id, rxq_ctrl->rxq.idx);
 		++ret;
@@ -2348,7 +2388,7 @@ int
 mlx5_ext_rxq_verify(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_external_rxq *rxq;
+	struct mlx5_external_q *rxq;
 	uint32_t i;
 	int ret = 0;
 
@@ -2459,8 +2499,8 @@ mlx5_ind_table_obj_get(struct rte_eth_dev *dev, const uint16_t *queues,
 		    (memcmp(ind_tbl->queues, queues,
 			    ind_tbl->queues_n * sizeof(ind_tbl->queues[0]))
 		     == 0)) {
-			__atomic_fetch_add(&ind_tbl->refcnt, 1,
-					   __ATOMIC_RELAXED);
+			rte_atomic_fetch_add_explicit(&ind_tbl->refcnt, 1,
+					   rte_memory_order_relaxed);
 			break;
 		}
 	}
@@ -2491,7 +2531,7 @@ mlx5_ind_table_obj_release(struct rte_eth_dev *dev,
 	unsigned int ret;
 
 	rte_rwlock_write_lock(&priv->ind_tbls_lock);
-	ret = __atomic_fetch_sub(&ind_tbl->refcnt, 1, __ATOMIC_RELAXED) - 1;
+	ret = rte_atomic_fetch_sub_explicit(&ind_tbl->refcnt, 1, rte_memory_order_relaxed) - 1;
 	if (!ret)
 		LIST_REMOVE(ind_tbl, next);
 	rte_rwlock_write_unlock(&priv->ind_tbls_lock);
@@ -2573,7 +2613,7 @@ mlx5_ind_table_obj_setup(struct rte_eth_dev *dev,
 		}
 		return ret;
 	}
-	__atomic_fetch_add(&ind_tbl->refcnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&ind_tbl->refcnt, 1, rte_memory_order_relaxed);
 	return 0;
 }
 
@@ -2638,7 +2678,7 @@ mlx5_ind_table_obj_check_standalone(struct rte_eth_dev *dev __rte_unused,
 {
 	uint32_t refcnt;
 
-	refcnt = __atomic_load_n(&ind_tbl->refcnt, __ATOMIC_RELAXED);
+	refcnt = rte_atomic_load_explicit(&ind_tbl->refcnt, rte_memory_order_relaxed);
 	if (refcnt <= 1)
 		return 0;
 	/*
@@ -3220,11 +3260,12 @@ mlx5_rxq_timestamp_set(struct rte_eth_dev *dev)
  *   Pointer to concurrent external RxQ on success,
  *   NULL otherwise and rte_errno is set.
  */
-static struct mlx5_external_rxq *
+static struct mlx5_external_q *
 mlx5_external_rx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
 {
 	struct rte_eth_dev *dev;
 	struct mlx5_priv *priv;
+	int ret;
 
 	if (dpdk_idx < RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN) {
 		DRV_LOG(ERR, "Queue index %u should be in range: [%u, %u].",
@@ -3232,28 +3273,11 @@ mlx5_external_rx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
 		rte_errno = EINVAL;
 		return NULL;
 	}
-	if (rte_eth_dev_is_valid_port(port_id) < 0) {
-		DRV_LOG(ERR, "There is no Ethernet device for port %u.",
-			port_id);
-		rte_errno = ENODEV;
+	ret = mlx5_devx_extq_port_validate(port_id);
+	if (unlikely(ret))
 		return NULL;
-	}
 	dev = &rte_eth_devices[port_id];
 	priv = dev->data->dev_private;
-	if (!mlx5_imported_pd_and_ctx(priv->sh->cdev)) {
-		DRV_LOG(ERR, "Port %u "
-			"external RxQ isn't supported on local PD and CTX.",
-			port_id);
-		rte_errno = ENOTSUP;
-		return NULL;
-	}
-	if (!mlx5_devx_obj_ops_en(priv->sh)) {
-		DRV_LOG(ERR,
-			"Port %u external RxQ isn't supported by Verbs API.",
-			port_id);
-		rte_errno = ENOTSUP;
-		return NULL;
-	}
 	/*
 	 * When user configures remote PD and CTX and device creates RxQ by
 	 * DevX, external RxQs array is allocated.
@@ -3262,18 +3286,19 @@ mlx5_external_rx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
 	return &priv->ext_rxqs[dpdk_idx - RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_external_rx_queue_id_map, 22.03)
 int
 rte_pmd_mlx5_external_rx_queue_id_map(uint16_t port_id, uint16_t dpdk_idx,
 				      uint32_t hw_idx)
 {
-	struct mlx5_external_rxq *ext_rxq;
+	struct mlx5_external_q *ext_rxq;
 	uint32_t unmapped = 0;
 
 	ext_rxq = mlx5_external_rx_queue_get_validate(port_id, dpdk_idx);
 	if (ext_rxq == NULL)
 		return -rte_errno;
-	if (!__atomic_compare_exchange_n(&ext_rxq->refcnt, &unmapped, 1, false,
-					 __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&ext_rxq->refcnt, &unmapped, 1,
+					 rte_memory_order_relaxed, rte_memory_order_relaxed)) {
 		if (ext_rxq->hw_id != hw_idx) {
 			DRV_LOG(ERR, "Port %u external RxQ index %u "
 				"is already mapped to HW index (requesting is "
@@ -3295,10 +3320,11 @@ rte_pmd_mlx5_external_rx_queue_id_map(uint16_t port_id, uint16_t dpdk_idx,
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_external_rx_queue_id_unmap, 22.03)
 int
 rte_pmd_mlx5_external_rx_queue_id_unmap(uint16_t port_id, uint16_t dpdk_idx)
 {
-	struct mlx5_external_rxq *ext_rxq;
+	struct mlx5_external_q *ext_rxq;
 	uint32_t mapped = 1;
 
 	ext_rxq = mlx5_external_rx_queue_get_validate(port_id, dpdk_idx);
@@ -3310,8 +3336,8 @@ rte_pmd_mlx5_external_rx_queue_id_unmap(uint16_t port_id, uint16_t dpdk_idx)
 		rte_errno = EINVAL;
 		return -rte_errno;
 	}
-	if (!__atomic_compare_exchange_n(&ext_rxq->refcnt, &mapped, 0, false,
-					 __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&ext_rxq->refcnt, &mapped, 0,
+					 rte_memory_order_relaxed, rte_memory_order_relaxed)) {
 		DRV_LOG(ERR, "Port %u external RxQ index %u doesn't exist.",
 			port_id, dpdk_idx);
 		rte_errno = EINVAL;

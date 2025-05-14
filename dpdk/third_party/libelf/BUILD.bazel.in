@@ -1,0 +1,10 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "libelf",
+    hdrs = glob(
+        include = ["libelf/**/*.h"],
+    ),
+    includes = ["libelf"],
+    visibility = ["//visibility:public"],
+)

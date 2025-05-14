@@ -28,6 +28,46 @@
 #include "mlx5_flow_os.h"
 
 /**
+ * Validate given external queue's port is valid or not.
+ *
+ * @param[in] port_id
+ *   The port identifier of the Ethernet device.
+ *
+ * @return
+ *   0 on success, non-0 otherwise
+ */
+int
+mlx5_devx_extq_port_validate(uint16_t port_id)
+{
+	struct rte_eth_dev *dev;
+	struct mlx5_priv *priv;
+
+	if (rte_eth_dev_is_valid_port(port_id) < 0) {
+		DRV_LOG(ERR, "There is no Ethernet device for port %u.",
+			port_id);
+		rte_errno = ENODEV;
+		return -rte_errno;
+	}
+	dev = &rte_eth_devices[port_id];
+	priv = dev->data->dev_private;
+	if (!mlx5_imported_pd_and_ctx(priv->sh->cdev)) {
+		DRV_LOG(ERR, "Port %u "
+			"external queue isn't supported on local PD and CTX.",
+			port_id);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+	if (!mlx5_devx_obj_ops_en(priv->sh)) {
+		DRV_LOG(ERR,
+			"Port %u external queue isn't supported by Verbs API.",
+			port_id);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+	return 0;
+}
+
+/**
  * Modify RQ vlan stripping offload
  *
  * @param rxq
@@ -49,6 +89,30 @@ mlx5_rxq_obj_modify_rq_vlan_strip(struct mlx5_rxq_priv *rxq, int on)
 	rq_attr.vsd = (on ? 0 : 1);
 	rq_attr.modify_bitmask = MLX5_MODIFY_RQ_IN_MODIFY_BITMASK_VSD;
 	return mlx5_devx_cmd_modify_rq(rxq->devx_rq.rq, &rq_attr);
+}
+
+/**
+ * Modify the q counter of a given RQ
+ *
+ * @param rxq
+ *   Rx queue.
+ * @param counter_set_id
+ *   Q counter id to set
+ *
+ * @return
+ *   0 on success, non-0 otherwise
+ */
+static int
+mlx5_rxq_obj_modify_counter(struct mlx5_rxq_priv *rxq, uint32_t counter_set_id)
+{
+	struct mlx5_devx_modify_rq_attr rq_attr;
+
+	memset(&rq_attr, 0, sizeof(rq_attr));
+	rq_attr.rq_state = MLX5_RQC_STATE_RDY;
+	rq_attr.state = MLX5_RQC_STATE_RDY;
+	rq_attr.counter_set_id = counter_set_id;
+	rq_attr.modify_bitmask = MLX5_MODIFY_RQ_IN_MODIFY_BITMASK_RQ_COUNTER_SET_ID;
+	return mlx5_devx_cmd_modify_rq(rxq->ctrl->obj->rq, &rq_attr);
 }
 
 /**
@@ -456,6 +520,7 @@ mlx5_rxq_create_devx_cq_resources(struct mlx5_rxq_priv *rxq)
 	return 0;
 }
 
+
 /**
  * Create the Rx hairpin queue object.
  *
@@ -501,7 +566,8 @@ mlx5_rxq_obj_hairpin_new(struct mlx5_rxq_priv *rxq)
 	unlocked_attr.wq_attr.log_hairpin_num_packets =
 			unlocked_attr.wq_attr.log_hairpin_data_sz -
 			MLX5_HAIRPIN_QUEUE_STRIDE;
-	unlocked_attr.counter_set_id = priv->counter_set_id;
+
+
 	rxq_ctrl->rxq.delay_drop = priv->config.hp_delay_drop;
 	unlocked_attr.delay_drop_en = priv->config.hp_delay_drop;
 	unlocked_attr.hairpin_data_buffer_type =
@@ -674,7 +740,7 @@ mlx5_devx_ind_table_create_rqt_attr(struct rte_eth_dev *dev,
 	}
 	for (i = 0; i != queues_n; ++i) {
 		if (mlx5_is_external_rxq(dev, queues[i])) {
-			struct mlx5_external_rxq *ext_rxq =
+			struct mlx5_external_q *ext_rxq =
 					mlx5_ext_rxq_get(dev, queues[i]);
 
 			rqt_attr->rq_list[i] = ext_rxq->hw_id;
@@ -1618,6 +1684,7 @@ mlx5_txq_devx_obj_release(struct mlx5_txq_obj *txq_obj)
 
 struct mlx5_obj_ops devx_obj_ops = {
 	.rxq_obj_modify_vlan_strip = mlx5_rxq_obj_modify_rq_vlan_strip,
+	.rxq_obj_modify_counter_set_id = mlx5_rxq_obj_modify_counter,
 	.rxq_obj_new = mlx5_rxq_devx_obj_new,
 	.rxq_event_get = mlx5_rx_devx_get_event,
 	.rxq_obj_modify = mlx5_devx_modify_rq,

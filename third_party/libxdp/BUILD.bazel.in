@@ -1,0 +1,10 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "libxdp",
+    hdrs = glob(["headers/xdp/xsk.h"]),
+    includes = ["headers/xdp"],
+    include_prefix = "bpf",
+    strip_include_prefix = "headers/xdp",
+    visibility = ["//visibility:public"],
+)

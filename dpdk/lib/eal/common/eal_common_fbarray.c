@@ -15,6 +15,7 @@
 #include <rte_log.h>
 #include <rte_spinlock.h>
 
+#include <eal_export.h>
 #include "eal_filesystem.h"
 #include "eal_private.h"
 
@@ -83,7 +84,7 @@ resize_and_map(int fd, const char *path, void *addr, size_t len)
 	void *map_addr;
 
 	if (eal_file_truncate(fd, len)) {
-		RTE_LOG(ERR, EAL, "Cannot truncate %s\n", path);
+		EAL_LOG(ERR, "Cannot truncate %s", path);
 		return -1;
 	}
 
@@ -715,6 +716,7 @@ fully_validate(const char *name, unsigned int elt_sz, unsigned int len)
 	return 0;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_init)
 int
 rte_fbarray_init(struct rte_fbarray *arr, const char *name, unsigned int len,
 		unsigned int elt_sz)
@@ -769,7 +771,7 @@ rte_fbarray_init(struct rte_fbarray *arr, const char *name, unsigned int len,
 		void *new_data = rte_mem_map(data, mmap_len,
 			RTE_PROT_READ | RTE_PROT_WRITE, flags, fd, 0);
 		if (new_data == NULL) {
-			RTE_LOG(DEBUG, EAL, "%s(): couldn't remap anonymous memory: %s\n",
+			EAL_LOG(DEBUG, "%s(): couldn't remap anonymous memory: %s",
 					__func__, rte_strerror(rte_errno));
 			goto fail;
 		}
@@ -784,12 +786,12 @@ rte_fbarray_init(struct rte_fbarray *arr, const char *name, unsigned int len,
 		 */
 		fd = eal_file_open(path, EAL_OPEN_CREATE | EAL_OPEN_READWRITE);
 		if (fd < 0) {
-			RTE_LOG(DEBUG, EAL, "%s(): couldn't open %s: %s\n",
+			EAL_LOG(DEBUG, "%s(): couldn't open %s: %s",
 				__func__, path, rte_strerror(rte_errno));
 			goto fail;
 		} else if (eal_file_lock(
 				fd, EAL_FLOCK_EXCLUSIVE, EAL_FLOCK_RETURN)) {
-			RTE_LOG(DEBUG, EAL, "%s(): couldn't lock %s: %s\n",
+			EAL_LOG(DEBUG, "%s(): couldn't lock %s: %s",
 				__func__, path, rte_strerror(rte_errno));
 			rte_errno = EBUSY;
 			goto fail;
@@ -841,6 +843,7 @@ fail:
 	return -1;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_attach)
 int
 rte_fbarray_attach(struct rte_fbarray *arr)
 {
@@ -929,6 +932,7 @@ fail:
 	return -1;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_detach)
 int
 rte_fbarray_detach(struct rte_fbarray *arr)
 {
@@ -982,6 +986,7 @@ out:
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_destroy)
 int
 rte_fbarray_destroy(struct rte_fbarray *arr)
 {
@@ -1031,7 +1036,7 @@ rte_fbarray_destroy(struct rte_fbarray *arr)
 		 */
 		fd = tmp->fd;
 		if (eal_file_lock(fd, EAL_FLOCK_EXCLUSIVE, EAL_FLOCK_RETURN)) {
-			RTE_LOG(DEBUG, EAL, "Cannot destroy fbarray - another process is using it\n");
+			EAL_LOG(DEBUG, "Cannot destroy fbarray - another process is using it");
 			rte_errno = EBUSY;
 			ret = -1;
 			goto out;
@@ -1040,7 +1045,7 @@ rte_fbarray_destroy(struct rte_fbarray *arr)
 		/* we're OK to destroy the file */
 		eal_get_fbarray_path(path, sizeof(path), arr->name);
 		if (unlink(path)) {
-			RTE_LOG(DEBUG, EAL, "Cannot unlink fbarray: %s\n",
+			EAL_LOG(DEBUG, "Cannot unlink fbarray: %s",
 				strerror(errno));
 			rte_errno = errno;
 			/*
@@ -1068,6 +1073,7 @@ out:
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_get)
 void *
 rte_fbarray_get(const struct rte_fbarray *arr, unsigned int idx)
 {
@@ -1087,18 +1093,21 @@ rte_fbarray_get(const struct rte_fbarray *arr, unsigned int idx)
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_set_used)
 int
 rte_fbarray_set_used(struct rte_fbarray *arr, unsigned int idx)
 {
 	return set_used(arr, idx, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_set_free)
 int
 rte_fbarray_set_free(struct rte_fbarray *arr, unsigned int idx)
 {
 	return set_used(arr, idx, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_is_used)
 int
 rte_fbarray_is_used(struct rte_fbarray *arr, unsigned int idx)
 {
@@ -1168,24 +1177,28 @@ out:
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_next_free)
 int
 rte_fbarray_find_next_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find(arr, start, true, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_next_used)
 int
 rte_fbarray_find_next_used(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find(arr, start, true, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_prev_free)
 int
 rte_fbarray_find_prev_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find(arr, start, false, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_prev_used)
 int
 rte_fbarray_find_prev_used(struct rte_fbarray *arr, unsigned int start)
 {
@@ -1244,6 +1257,7 @@ out:
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_next_n_free)
 int
 rte_fbarray_find_next_n_free(struct rte_fbarray *arr, unsigned int start,
 		unsigned int n)
@@ -1251,6 +1265,7 @@ rte_fbarray_find_next_n_free(struct rte_fbarray *arr, unsigned int start,
 	return fbarray_find_n(arr, start, n, true, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_next_n_used)
 int
 rte_fbarray_find_next_n_used(struct rte_fbarray *arr, unsigned int start,
 		unsigned int n)
@@ -1258,6 +1273,7 @@ rte_fbarray_find_next_n_used(struct rte_fbarray *arr, unsigned int start,
 	return fbarray_find_n(arr, start, n, true, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_prev_n_free)
 int
 rte_fbarray_find_prev_n_free(struct rte_fbarray *arr, unsigned int start,
 		unsigned int n)
@@ -1265,6 +1281,7 @@ rte_fbarray_find_prev_n_free(struct rte_fbarray *arr, unsigned int start,
 	return fbarray_find_n(arr, start, n, false, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_prev_n_used)
 int
 rte_fbarray_find_prev_n_used(struct rte_fbarray *arr, unsigned int start,
 		unsigned int n)
@@ -1408,24 +1425,28 @@ fbarray_find_biggest(struct rte_fbarray *arr, unsigned int start, bool used,
 	return biggest_idx;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_biggest_free)
 int
 rte_fbarray_find_biggest_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_biggest(arr, start, false, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_biggest_used)
 int
 rte_fbarray_find_biggest_used(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_biggest(arr, start, true, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_rev_biggest_free)
 int
 rte_fbarray_find_rev_biggest_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_biggest(arr, start, false, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_rev_biggest_used)
 int
 rte_fbarray_find_rev_biggest_used(struct rte_fbarray *arr, unsigned int start)
 {
@@ -1433,30 +1454,35 @@ rte_fbarray_find_rev_biggest_used(struct rte_fbarray *arr, unsigned int start)
 }
 
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_contig_free)
 int
 rte_fbarray_find_contig_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_contig(arr, start, true, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_contig_used)
 int
 rte_fbarray_find_contig_used(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_contig(arr, start, true, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_rev_contig_free)
 int
 rte_fbarray_find_rev_contig_free(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_contig(arr, start, false, false);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_rev_contig_used)
 int
 rte_fbarray_find_rev_contig_used(struct rte_fbarray *arr, unsigned int start)
 {
 	return fbarray_find_contig(arr, start, false, true);
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_find_idx)
 int
 rte_fbarray_find_idx(const struct rte_fbarray *arr, const void *elt)
 {
@@ -1483,6 +1509,7 @@ rte_fbarray_find_idx(const struct rte_fbarray *arr, const void *elt)
 	return ret;
 }
 
+RTE_EXPORT_SYMBOL(rte_fbarray_dump_metadata)
 void
 rte_fbarray_dump_metadata(struct rte_fbarray *arr, FILE *f)
 {

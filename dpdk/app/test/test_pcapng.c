@@ -73,7 +73,7 @@ mbuf1_prepare(struct dummy_mbuf *dm, uint32_t plen)
 		struct rte_udp_hdr udp;
 	} pkt = {
 		.eth = {
-			.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+			.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 			.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
 		},
 		.ip = {
@@ -243,7 +243,7 @@ parse_pcap_packet(u_char *user, const struct pcap_pkthdr *h,
 	 * but the file is open in nanonsecond mode therefore
 	 * the timestamp is really in timespec (ie. nanoseconds).
 	 */
-	ns = h->ts.tv_sec * NS_PER_S + h->ts.tv_usec;
+	ns = (uint64_t)h->ts.tv_sec * NS_PER_S + h->ts.tv_usec;
 	if (ns < ctx->start_ns || ns > ctx->end_ns) {
 		char tstart[128], tend[128];
 

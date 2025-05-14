@@ -373,15 +373,16 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->back = pci_dev;
+	hw->port_id = eth_dev->data->port_id;
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
 		hw->sub_system_id = pci_dev->id.subsystem_device_id;
 	} else {
-		u32 ssid;
+		u32 ssid = 0;
 
-		ssid = ngbe_flash_read_dword(hw, 0xFFFDC);
-		if (ssid == 0x1) {
+		err = ngbe_flash_read_dword(hw, 0xFFFDC, &ssid);
+		if (err) {
 			PMD_INIT_LOG(ERR,
 				"Read of internal subsystem device id failed");
 			return -ENODEV;
@@ -408,6 +409,7 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	/* Unlock any pending hardware semaphore */
 	ngbe_swfw_lock_reset(hw);
+	ngbe_set_ncsi_status(hw);
 
 	/* Get Hardware Flow Control setting */
 	hw->fc.requested_mode = ngbe_fc_full;
@@ -925,6 +927,7 @@ ngbe_dev_configure(struct rte_eth_dev *dev)
 	 * allocation Rx preconditions we will reset it.
 	 */
 	adapter->rx_bulk_alloc_allowed = true;
+	adapter->rx_vec_allowed = true;
 
 	return 0;
 }
@@ -1084,10 +1087,12 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 			speed |= NGBE_LINK_SPEED_10M_FULL;
 	}
 
-	err = hw->phy.init_hw(hw);
-	if (err != 0) {
-		PMD_INIT_LOG(ERR, "PHY init failed");
-		goto error;
+	if (!hw->ncsi_enabled) {
+		err = hw->phy.init_hw(hw);
+		if (err != 0) {
+			PMD_INIT_LOG(ERR, "PHY init failed");
+			goto error;
+		}
 	}
 	err = hw->mac.setup_link(hw, speed, link_up);
 	if (err != 0)
@@ -1210,7 +1215,8 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 out:
 	/* close phy to prevent reset in dev_close from restarting physical link */
-	hw->phy.set_phy_power(hw, false);
+	if (!(hw->wol_enabled || hw->ncsi_enabled))
+		hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1223,7 +1229,8 @@ ngbe_dev_set_link_up(struct rte_eth_dev *dev)
 {
 	struct ngbe_hw *hw = ngbe_dev_hw(dev);
 
-	hw->phy.set_phy_power(hw, true);
+	if (!(hw->ncsi_enabled || hw->wol_enabled))
+		hw->phy.set_phy_power(hw, true);
 
 	return 0;
 }
@@ -1236,7 +1243,8 @@ ngbe_dev_set_link_down(struct rte_eth_dev *dev)
 {
 	struct ngbe_hw *hw = ngbe_dev_hw(dev);
 
-	hw->phy.set_phy_power(hw, false);
+	if (!(hw->ncsi_enabled || hw->wol_enabled))
+		hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1495,6 +1503,7 @@ ngbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct ngbe_hw_stats *hw_stats = NGBE_DEV_STATS(dev);
 	struct ngbe_stat_mappings *stat_mappings =
 			NGBE_DEV_STAT_MAPPINGS(dev);
+	struct ngbe_tx_queue *txq;
 	uint32_t i, j;
 
 	ngbe_read_stats_registers(hw, hw_stats);
@@ -1547,6 +1556,11 @@ ngbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	/* Tx Errors */
 	stats->oerrors  = 0;
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		stats->oerrors += txq->desc_error;
+	}
+
 	return 0;
 }
 
@@ -1555,6 +1569,13 @@ ngbe_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct ngbe_hw *hw = ngbe_dev_hw(dev);
 	struct ngbe_hw_stats *hw_stats = NGBE_DEV_STATS(dev);
+	struct ngbe_tx_queue *txq;
+	uint32_t i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		txq->desc_error = 0;
+	}
 
 	/* HW registers are cleared on read */
 	hw->offset_loaded = 0;
@@ -1862,13 +1883,17 @@ ngbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 }
 
 const uint32_t *
-ngbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+ngbe_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	if (dev->rx_pkt_burst == ngbe_recv_pkts ||
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+	    dev->rx_pkt_burst == ngbe_recv_pkts_vec ||
+	    dev->rx_pkt_burst == ngbe_recv_scattered_pkts_vec ||
+#endif
 	    dev->rx_pkt_burst == ngbe_recv_pkts_sc_single_alloc ||
 	    dev->rx_pkt_burst == ngbe_recv_pkts_sc_bulk_alloc ||
 	    dev->rx_pkt_burst == ngbe_recv_pkts_bulk_alloc)
-		return ngbe_get_supported_ptypes();
+		return ngbe_get_supported_ptypes(no_of_elements);
 
 	return NULL;
 }
@@ -2747,6 +2772,35 @@ ngbe_uc_all_hash_table_set(struct rte_eth_dev *dev, uint8_t on)
 	return 0;
 }
 
+static int
+ngbe_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	uint32_t mask;
+
+	mask = rd32(hw, NGBE_IMC(0));
+	mask |= (1 << queue_id);
+	wr32(hw, NGBE_IMC(0), mask);
+	rte_intr_enable(intr_handle);
+
+	return 0;
+}
+
+static int
+ngbe_dev_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	uint32_t mask;
+
+	mask = rd32(hw, NGBE_IMS(0));
+	mask |= (1 << queue_id);
+	wr32(hw, NGBE_IMS(0), mask);
+
+	return 0;
+}
+
 /**
  * Set the IVAR registers, mapping interrupt causes to vectors
  * @param hw
@@ -2774,7 +2828,7 @@ ngbe_set_ivar_map(struct ngbe_hw *hw, int8_t direction,
 		wr32(hw, NGBE_IVARMISC, tmp);
 	} else {
 		/* rx or tx causes */
-		/* Workaround for ICR lost */
+		msix_vector |= NGBE_IVAR_VLD; /* Workaround for ICR lost */
 		idx = ((16 * (queue & 1)) + (8 * direction));
 		tmp = rd32(hw, NGBE_IVAR(queue >> 1));
 		tmp &= ~(0xFF << idx);
@@ -3206,6 +3260,8 @@ static const struct eth_dev_ops ngbe_eth_dev_ops = {
 	.rx_queue_release           = ngbe_dev_rx_queue_release,
 	.tx_queue_setup             = ngbe_dev_tx_queue_setup,
 	.tx_queue_release           = ngbe_dev_tx_queue_release,
+	.rx_queue_intr_enable       = ngbe_dev_rx_queue_intr_enable,
+	.rx_queue_intr_disable      = ngbe_dev_rx_queue_intr_disable,
 	.dev_led_on                 = ngbe_dev_led_on,
 	.dev_led_off                = ngbe_dev_led_off,
 	.flow_ctrl_get              = ngbe_flow_ctrl_get,

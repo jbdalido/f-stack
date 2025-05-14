@@ -1,0 +1,20 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "uadk",
+    hdrs = glob(["include/**/*.h"]),  # Reference the genrule's output
+    includes = ["include"],
+    strip_include_prefix = "include",
+    include_prefix = "uadk",             # Matches expected include path
+    visibility = ["//visibility:public"],
+)
+
+
+cc_library(
+    name = "uadk_drv",
+    hdrs = glob(["**/*.h"]),  # Reference the genrule's output
+    includes = ["include"],
+    strip_include_prefix = "uadk/include",
+    include_prefix = "uadk",             # Matches expected include path
+    visibility = ["//visibility:public"],
+)

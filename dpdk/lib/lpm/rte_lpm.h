@@ -12,6 +12,7 @@
  */
 
 #include <errno.h>
+#include <stdalign.h>
 #include <stdint.h>
 
 #include <rte_branch_prediction.h>
@@ -118,8 +119,8 @@ struct rte_lpm_config {
 /** @internal LPM structure. */
 struct rte_lpm {
 	/* LPM Tables. */
-	struct rte_lpm_tbl_entry tbl24[RTE_LPM_TBL24_NUM_ENTRIES]
-			__rte_cache_aligned; /**< LPM tbl24 table. */
+	alignas(RTE_CACHE_LINE_SIZE) struct rte_lpm_tbl_entry tbl24[RTE_LPM_TBL24_NUM_ENTRIES];
+			/**< LPM tbl24 table. */
 	struct rte_lpm_tbl_entry *tbl8; /**< LPM tbl8 table. */
 };
 
@@ -138,6 +139,16 @@ struct rte_lpm_rcu_config {
 				 * default: RTE_LPM_RCU_DQ_RECLAIM_MAX.
 				 */
 };
+
+/**
+ * Free an LPM object.
+ *
+ * @param lpm
+ *   LPM object handle
+ *   If lpm is NULL, no operation is performed.
+ */
+void
+rte_lpm_free(struct rte_lpm *lpm);
 
 /**
  * Create an LPM object.
@@ -160,7 +171,8 @@ struct rte_lpm_rcu_config {
  */
 struct rte_lpm *
 rte_lpm_create(const char *name, int socket_id,
-		const struct rte_lpm_config *config);
+	       const struct rte_lpm_config *config)
+	__rte_malloc __rte_dealloc(rte_lpm_free, 1);
 
 /**
  * Find an existing LPM object and return a pointer to it.
@@ -174,16 +186,6 @@ rte_lpm_create(const char *name, int socket_id,
  */
 struct rte_lpm *
 rte_lpm_find_existing(const char *name);
-
-/**
- * Free an LPM object.
- *
- * @param lpm
- *   LPM object handle
- *   If lpm is NULL, no operation is performed.
- */
-void
-rte_lpm_free(struct rte_lpm *lpm);
 
 /**
  * Associate RCU QSBR variable with an LPM object.
@@ -336,7 +338,6 @@ rte_lpm_lookup_bulk_func(const struct rte_lpm *lpm, const uint32_t *ips,
 		uint32_t *next_hops, const unsigned n)
 {
 	unsigned i;
-	unsigned tbl24_indexes[n];
 	const uint32_t *ptbl;
 
 	/* DEBUG: Check user input arguments. */
@@ -344,12 +345,10 @@ rte_lpm_lookup_bulk_func(const struct rte_lpm *lpm, const uint32_t *ips,
 			(next_hops == NULL)), -EINVAL);
 
 	for (i = 0; i < n; i++) {
-		tbl24_indexes[i] = ips[i] >> 8;
-	}
+		unsigned int tbl24_index = ips[i] >> 8;
 
-	for (i = 0; i < n; i++) {
 		/* Simply copy tbl24 entry to output */
-		ptbl = (const uint32_t *)&lpm->tbl24[tbl24_indexes[i]];
+		ptbl = (const uint32_t *)&lpm->tbl24[tbl24_index];
 		next_hops[i] = *ptbl;
 
 		/* Overwrite output with tbl8 entry if needed */
@@ -393,6 +392,10 @@ static inline void
 rte_lpm_lookupx4(const struct rte_lpm *lpm, xmm_t ip, uint32_t hop[4],
 	uint32_t defv);
 
+#ifdef __cplusplus
+}
+#endif
+
 #if defined(RTE_ARCH_ARM)
 #ifdef RTE_HAS_SVE_ACLE
 #include "rte_lpm_sve.h"
@@ -407,10 +410,6 @@ rte_lpm_lookupx4(const struct rte_lpm *lpm, xmm_t ip, uint32_t hop[4],
 #include "rte_lpm_sse.h"
 #else
 #include "rte_lpm_scalar.h"
-#endif
-
-#ifdef __cplusplus
-}
 #endif
 
 #endif /* _RTE_LPM_H_ */

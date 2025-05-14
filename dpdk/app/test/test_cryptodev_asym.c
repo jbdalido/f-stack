@@ -20,6 +20,7 @@
 #include "test_cryptodev_ecdh_test_vectors.h"
 #include "test_cryptodev_ecdsa_test_vectors.h"
 #include "test_cryptodev_ecpm_test_vectors.h"
+#include "test_cryptodev_eddsa_test_vectors.h"
 #include "test_cryptodev_mod_test_vectors.h"
 #include "test_cryptodev_rsa_test_vectors.h"
 #include "test_cryptodev_sm2_test_vectors.h"
@@ -61,7 +62,7 @@ queue_ops_rsa_sign_verify(void *sess)
 	struct rte_crypto_op *op, *result_op;
 	struct rte_crypto_asym_op *asym_op;
 	uint8_t output_buf[TEST_DATA_SIZE];
-	int status = TEST_SUCCESS;
+	int status;
 
 	/* Set up crypto op data structure */
 	op = rte_crypto_op_alloc(op_mpool, RTE_CRYPTO_OP_TYPE_ASYMMETRIC);
@@ -80,7 +81,6 @@ queue_ops_rsa_sign_verify(void *sess)
 	asym_op->rsa.message.length = rsaplaintext.len;
 	asym_op->rsa.sign.length = RTE_DIM(rsa_n);
 	asym_op->rsa.sign.data = output_buf;
-	asym_op->rsa.padding.type = RTE_CRYPTO_RSA_PADDING_PKCS1_5;
 
 	debug_hexdump(stdout, "message", asym_op->rsa.message.data,
 		      asym_op->rsa.message.length);
@@ -112,7 +112,6 @@ queue_ops_rsa_sign_verify(void *sess)
 
 	/* Verify sign */
 	asym_op->rsa.op_type = RTE_CRYPTO_ASYM_OP_VERIFY;
-	asym_op->rsa.padding.type = RTE_CRYPTO_RSA_PADDING_PKCS1_5;
 
 	/* Process crypto operation */
 	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
@@ -130,12 +129,35 @@ queue_ops_rsa_sign_verify(void *sess)
 		goto error_exit;
 	}
 
-	status = TEST_SUCCESS;
 	if (result_op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		RTE_LOG(ERR, USER1, "Failed to process sign-verify op\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	/* Negative test */
+	result_op->asym->rsa.sign.data[0] ^= 0xff;
+	if (rte_cryptodev_enqueue_burst(dev_id, 0, &result_op, 1) != 1) {
+		RTE_LOG(ERR, USER1, "Error sending packet for verify\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	while (rte_cryptodev_dequeue_burst(dev_id, 0, &result_op, 1) == 0)
+		rte_pause();
+
+	if (result_op == NULL) {
+		RTE_LOG(ERR, USER1, "Failed to process verify op\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	if (result_op->status != RTE_CRYPTO_OP_STATUS_ERROR) {
 		RTE_LOG(ERR, USER1, "Failed to process sign-verify op\n");
 		status = TEST_FAILED;
 	}
 
+	status = TEST_SUCCESS;
 error_exit:
 
 	rte_crypto_op_free(op);
@@ -171,7 +193,6 @@ queue_ops_rsa_enc_dec(void *sess)
 	asym_op->rsa.cipher.data = cipher_buf;
 	asym_op->rsa.cipher.length = RTE_DIM(rsa_n);
 	asym_op->rsa.message.length = rsaplaintext.len;
-	asym_op->rsa.padding.type = RTE_CRYPTO_RSA_PADDING_PKCS1_5;
 
 	debug_hexdump(stdout, "message", asym_op->rsa.message.data,
 		      asym_op->rsa.message.length);
@@ -203,7 +224,6 @@ queue_ops_rsa_enc_dec(void *sess)
 	asym_op = result_op->asym;
 	asym_op->rsa.message.length = RTE_DIM(rsa_n);
 	asym_op->rsa.op_type = RTE_CRYPTO_ASYM_OP_DECRYPT;
-	asym_op->rsa.padding.type = RTE_CRYPTO_RSA_PADDING_PKCS1_5;
 
 	/* Process crypto operation */
 	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
@@ -237,10 +257,16 @@ test_rsa_sign_verify(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with exponent key only,
 	 * Check in PMD feature flag for RSA exponent key type support.
@@ -277,10 +303,16 @@ test_rsa_enc_dec(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with exponent key only,
 	 * Check in PMD feature flag for RSA exponent key type support.
@@ -317,10 +349,16 @@ test_rsa_sign_verify_crt(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with quintuple format key only,
 	 * Check im PMD feature flag for RSA quintuple key type support.
@@ -357,10 +395,16 @@ test_rsa_enc_dec_crt(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with quintuple format key only,
 	 * Check in PMD feature flag for RSA quintuple key type support.
@@ -1631,6 +1675,9 @@ test_ecdsa_sign_verify_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
+		if (curve_id == ED25519 || curve_id == ED448)
+			continue;
+
 		status = test_ecdsa_sign_verify(curve_id);
 		if (status == TEST_SUCCESS) {
 			msg = "succeeded";
@@ -1792,7 +1839,7 @@ test_ecpm_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA)
+		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecpm(curve_id);
@@ -1966,10 +2013,18 @@ test_ecdh_pub_key_generate(enum curve curve_id)
 	idx.type = RTE_CRYPTO_ASYM_XFORM_ECDH;
 	capa = rte_cryptodev_asym_capability_get(dev_id, &idx);
 	if (capa == NULL)
-		return -ENOTSUP;
+		return TEST_SKIPPED;
 
 	if (!(capa->op_types & (1 <<  RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE)))
-		return -ENOTSUP;
+		return TEST_SKIPPED;
+
+	if (curve_id == ED25519 || curve_id == ED448) {
+		/* Check EdDSA capability */
+		idx.type = RTE_CRYPTO_ASYM_XFORM_EDDSA;
+		capa = rte_cryptodev_asym_capability_get(dev_id, &idx);
+		if (capa == NULL)
+			return TEST_SKIPPED;
+	}
 
 	switch (curve_id) {
 	case SECP192R1:
@@ -1986,6 +2041,12 @@ test_ecdh_pub_key_generate(enum curve curve_id)
 		break;
 	case SECP521R1:
 		input_params = ecdh_param_secp521r1;
+		break;
+	case ED25519:
+		input_params = ecdh_param_ed25519;
+		break;
+	case ED448:
+		input_params = ecdh_param_ed448;
 		break;
 	default:
 		RTE_LOG(ERR, USER1,
@@ -2031,10 +2092,15 @@ test_ecdh_pub_key_generate(enum curve curve_id)
 
 	/* Populate op with operational details */
 	asym_op->ecdh.ke_type = RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE;
+	if (curve_id == ED25519 || curve_id == ED448)
+		asym_op->flags |= RTE_CRYPTO_ASYM_FLAG_PUB_KEY_COMPRESSED;
 
 	/* Init out buf */
 	asym_op->ecdh.pub_key.x.data = output_buf_x;
-	asym_op->ecdh.pub_key.y.data = output_buf_y;
+	if (curve_id == ED25519 || curve_id == ED448)
+		asym_op->ecdh.pub_key.y.data = NULL;
+	else
+		asym_op->ecdh.pub_key.y.data = output_buf_y;
 
 	RTE_LOG(DEBUG, USER1, "Process ASYM operation\n");
 
@@ -2073,8 +2139,13 @@ test_ecdh_pub_key_generate(enum curve curve_id)
 	debug_hexdump(stdout, "qy:",
 		asym_op->ecdh.pub_key.y.data, asym_op->ecdh.pub_key.y.length);
 
-	ret = verify_ecdh_secret(input_params.pubkey_qA_x.data,
+	if (curve_id == ED25519 || curve_id == ED448)
+		ret = memcmp(input_params.pubkey_qA_x.data, result_op->asym->ecdh.pub_key.x.data,
+			   result_op->asym->ecdh.pub_key.x.length);
+	else
+		ret = verify_ecdh_secret(input_params.pubkey_qA_x.data,
 				input_params.pubkey_qA_y.data, result_op);
+
 	if (ret) {
 		status = TEST_FAILED;
 		RTE_LOG(ERR, USER1,
@@ -2484,7 +2555,7 @@ test_ecdh_all_curve(void)
 	const char *msg;
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA)
+		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecdh_priv_key_generate(curve_id);
@@ -2505,6 +2576,8 @@ test_ecdh_all_curve(void)
 		status = test_ecdh_pub_key_generate(curve_id);
 		if (status == TEST_SUCCESS) {
 			msg = "succeeded";
+		} else if (status == TEST_SKIPPED) {
+			msg = "skipped";
 		} else {
 			msg = "failed";
 			overall_status = status;
@@ -2514,7 +2587,7 @@ test_ecdh_all_curve(void)
 	}
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA)
+		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecdh_pub_key_verify(curve_id);
@@ -2529,7 +2602,7 @@ test_ecdh_all_curve(void)
 	}
 
 	for (curve_id = SECP192R1; curve_id < END_OF_CURVE_LIST; curve_id++) {
-		if (curve_id == SECP521R1_UA)
+		if (curve_id == SECP521R1_UA || curve_id == ED25519 || curve_id == ED448)
 			continue;
 
 		status = test_ecdh_shared_secret(curve_id);
@@ -2611,7 +2684,8 @@ test_sm2_sign(void)
 
 	/* Populate op with operational details */
 	asym_op->sm2.op_type = RTE_CRYPTO_ASYM_OP_SIGN;
-	if (rte_cryptodev_asym_xform_capability_check_hash(capa, RTE_CRYPTO_AUTH_SM3))
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_SIGN, RTE_CRYPTO_SM2_PH))
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_SM3;
 	else
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_NULL;
@@ -2628,7 +2702,8 @@ test_sm2_sign(void)
 		asym_op->sm2.id.length = 0;
 	}
 
-	if (capa->internal_rng != 0) {
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_ENCRYPT, RTE_CRYPTO_SM2_RNG)) {
 		asym_op->sm2.k.data = NULL;
 		asym_op->sm2.k.length = 0;
 	} else {
@@ -2677,7 +2752,8 @@ test_sm2_sign(void)
 	debug_hexdump(stdout, "s:",
 			asym_op->sm2.s.data, asym_op->sm2.s.length);
 
-	if (capa->internal_rng == 0) {
+	if (!rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_SIGN, RTE_CRYPTO_SM2_RNG)) {
 		/* Verify sign (by comparison). */
 		if (memcmp(input_params.sign_r.data, asym_op->sm2.r.data,
 				   asym_op->sm2.r.length) != 0) {
@@ -2802,7 +2878,8 @@ test_sm2_verify(void)
 	/* Populate op with operational details */
 	asym_op->sm2.op_type = RTE_CRYPTO_ASYM_OP_VERIFY;
 
-	if (rte_cryptodev_asym_xform_capability_check_hash(capa, RTE_CRYPTO_AUTH_SM3))
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_VERIFY, RTE_CRYPTO_SM2_PH))
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_SM3;
 	else
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_NULL;
@@ -2924,7 +3001,8 @@ test_sm2_enc(void)
 
 	/* Populate op with operational details */
 	asym_op->sm2.op_type = RTE_CRYPTO_ASYM_OP_ENCRYPT;
-	if (rte_cryptodev_asym_xform_capability_check_hash(capa, RTE_CRYPTO_AUTH_SM3))
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_ENCRYPT, RTE_CRYPTO_SM2_PH))
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_SM3;
 	else
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_NULL;
@@ -2932,7 +3010,8 @@ test_sm2_enc(void)
 	asym_op->sm2.message.data = input_params.message.data;
 	asym_op->sm2.message.length = input_params.message.length;
 
-	if (capa->internal_rng != 0) {
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_ENCRYPT, RTE_CRYPTO_SM2_RNG)) {
 		asym_op->sm2.k.data = NULL;
 		asym_op->sm2.k.length = 0;
 	} else {
@@ -2978,7 +3057,8 @@ test_sm2_enc(void)
 	debug_hexdump(stdout, "cipher:",
 			asym_op->sm2.cipher.data, asym_op->sm2.cipher.length);
 
-	if (capa->internal_rng == 0) {
+	if (!rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_ENCRYPT, RTE_CRYPTO_SM2_RNG)) {
 		if (memcmp(input_params.cipher.data, asym_op->sm2.cipher.data,
 				   asym_op->sm2.cipher.length) != 0) {
 			status = TEST_FAILED;
@@ -3105,7 +3185,8 @@ test_sm2_dec(void)
 
 	/* Populate op with operational details */
 	asym_op->sm2.op_type = RTE_CRYPTO_ASYM_OP_DECRYPT;
-	if (rte_cryptodev_asym_xform_capability_check_hash(capa, RTE_CRYPTO_AUTH_SM3))
+	if (rte_cryptodev_asym_xform_capability_check_opcap(capa,
+			RTE_CRYPTO_ASYM_OP_DECRYPT, RTE_CRYPTO_SM2_PH))
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_SM3;
 	else
 		asym_op->sm2.hash = RTE_CRYPTO_AUTH_NULL;
@@ -3166,6 +3247,303 @@ exit:
 	rte_crypto_op_free(op);
 	return status;
 };
+
+static int
+test_eddsa_sign(struct crypto_testsuite_eddsa_params *input_params)
+{
+	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
+	enum rte_crypto_edward_instance instance = input_params->instance;
+	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_mempool *op_mpool = ts_params->op_mpool;
+	uint8_t dev_id = ts_params->valid_devs[0];
+	struct rte_crypto_op *result_op = NULL;
+	uint8_t output_buf_r[TEST_DATA_SIZE];
+	struct rte_crypto_asym_xform xform;
+	struct rte_crypto_asym_op *asym_op;
+	struct rte_crypto_op *op = NULL;
+	int ret, status = TEST_FAILED;
+	void *sess = NULL;
+	bool ctx = false;
+
+	if (instance == RTE_CRYPTO_EDCURVE_25519CTX)
+		ctx = true;
+
+	/* Setup crypto op data structure */
+	op = rte_crypto_op_alloc(op_mpool, RTE_CRYPTO_OP_TYPE_ASYMMETRIC);
+	if (op == NULL) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to allocate asymmetric crypto "
+				"operation struct\n");
+		status = TEST_FAILED;
+		goto exit;
+	}
+
+	asym_op = op->asym;
+
+	/* Setup asym xform */
+	xform.next = NULL;
+	xform.xform_type = RTE_CRYPTO_ASYM_XFORM_EDDSA;
+	xform.ec.curve_id = input_params->curve;
+	xform.ec.pkey.data = input_params->pkey.data;
+	xform.ec.pkey.length = input_params->pkey.length;
+	xform.ec.q.x.data = input_params->pubkey.data;
+	xform.ec.q.x.length = input_params->pubkey.length;
+
+	ret = rte_cryptodev_asym_session_create(dev_id, &xform, sess_mpool, &sess);
+	if (ret < 0) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Session creation failed\n");
+		status = (ret == -ENOTSUP) ? TEST_SKIPPED : TEST_FAILED;
+		goto exit;
+	}
+
+	/* Attach asymmetric crypto session to crypto operations */
+	rte_crypto_op_attach_asym_session(op, sess);
+
+	/* Compute sign */
+
+	/* Populate op with operational details */
+	asym_op->eddsa.op_type = RTE_CRYPTO_ASYM_OP_SIGN;
+	asym_op->eddsa.instance = input_params->instance;
+	asym_op->eddsa.message.data = input_params->message.data;
+	asym_op->eddsa.message.length = input_params->message.length;
+	asym_op->eddsa.context.length = 0;
+	if (ctx) {
+		asym_op->eddsa.context.data = input_params->context.data;
+		asym_op->eddsa.context.length = input_params->context.length;
+	}
+
+	/* Init out buf */
+	asym_op->eddsa.sign.data = output_buf_r;
+
+	RTE_LOG(DEBUG, USER1, "Process ASYM operation\n");
+
+	/* Process crypto operation */
+	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Error sending packet for operation\n");
+		goto exit;
+	}
+
+	while (rte_cryptodev_dequeue_burst(dev_id, 0, &result_op, 1) == 0)
+		rte_pause();
+
+	if (result_op == NULL) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to process asym crypto op\n");
+		goto exit;
+	}
+
+	if (result_op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to process asym crypto op\n");
+		goto exit;
+	}
+
+	asym_op = result_op->asym;
+
+	debug_hexdump(stdout, "sign:",
+			asym_op->eddsa.sign.data, asym_op->eddsa.sign.length);
+
+	/* Verify sign (by comparison). */
+	if (memcmp(input_params->sign.data, asym_op->eddsa.sign.data,
+			   asym_op->eddsa.sign.length) != 0) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"EdDSA sign failed.\n");
+		goto exit;
+	}
+
+	status = TEST_SUCCESS;
+exit:
+	if (sess != NULL)
+		rte_cryptodev_asym_session_free(dev_id, sess);
+	rte_crypto_op_free(op);
+	return status;
+};
+
+static int
+test_eddsa_verify(struct crypto_testsuite_eddsa_params *input_params)
+{
+	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
+	enum rte_crypto_edward_instance instance = input_params->instance;
+	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_mempool *op_mpool = ts_params->op_mpool;
+	uint8_t dev_id = ts_params->valid_devs[0];
+	struct rte_crypto_op *result_op = NULL;
+	struct rte_crypto_asym_xform xform;
+	struct rte_crypto_asym_op *asym_op;
+	struct rte_crypto_op *op = NULL;
+	int ret, status = TEST_FAILED;
+	void *sess = NULL;
+	bool ctx = false;
+
+	if (instance == RTE_CRYPTO_EDCURVE_25519CTX)
+		ctx = true;
+
+	/* Setup crypto op data structure */
+	op = rte_crypto_op_alloc(op_mpool, RTE_CRYPTO_OP_TYPE_ASYMMETRIC);
+	if (op == NULL) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to allocate asymmetric crypto "
+				"operation struct\n");
+		goto exit;
+	}
+
+	asym_op = op->asym;
+
+	/* Setup asym xform */
+	xform.next = NULL;
+	xform.xform_type = RTE_CRYPTO_ASYM_XFORM_EDDSA;
+	xform.ec.curve_id = input_params->curve;
+	xform.ec.pkey.length = 0;
+	xform.ec.q.x.data = input_params->pubkey.data;
+	xform.ec.q.x.length = input_params->pubkey.length;
+
+	ret = rte_cryptodev_asym_session_create(dev_id, &xform, sess_mpool, &sess);
+	if (ret < 0) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Session creation failed\n");
+		status = (ret == -ENOTSUP) ? TEST_SKIPPED : TEST_FAILED;
+		goto exit;
+	}
+
+	/* Attach asymmetric crypto session to crypto operations */
+	rte_crypto_op_attach_asym_session(op, sess);
+
+	/* Compute sign */
+
+	/* Populate op with operational details */
+	asym_op->eddsa.op_type = RTE_CRYPTO_ASYM_OP_VERIFY;
+	asym_op->eddsa.instance = input_params->instance;
+	asym_op->eddsa.message.data = input_params->message.data;
+	asym_op->eddsa.message.length = input_params->message.length;
+	asym_op->eddsa.context.length = 0;
+	if (ctx) {
+		asym_op->eddsa.context.data = input_params->context.data;
+		asym_op->eddsa.context.length = input_params->context.length;
+	}
+
+	asym_op->eddsa.sign.data = input_params->sign.data;
+	asym_op->eddsa.sign.length = input_params->sign.length;
+
+	RTE_LOG(DEBUG, USER1, "Process ASYM operation\n");
+
+	/* Process crypto operation */
+	if (rte_cryptodev_enqueue_burst(dev_id, 0, &op, 1) != 1) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Error sending packet for operation\n");
+		goto exit;
+	}
+
+	while (rte_cryptodev_dequeue_burst(dev_id, 0, &result_op, 1) == 0)
+		rte_pause();
+
+	if (result_op == NULL) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to process asym crypto op\n");
+		goto exit;
+	}
+
+	if (result_op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		RTE_LOG(ERR, USER1,
+				"line %u FAILED: %s", __LINE__,
+				"Failed to process asym crypto op\n");
+		goto exit;
+	}
+
+	status = TEST_SUCCESS;
+exit:
+	if (sess != NULL)
+		rte_cryptodev_asym_session_free(dev_id, sess);
+	rte_crypto_op_free(op);
+	return status;
+};
+
+static int
+test_eddsa_sign_verify_all_curve(void)
+{
+	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
+	const struct rte_cryptodev_asymmetric_xform_capability *capa;
+	struct crypto_testsuite_eddsa_params input_params;
+	struct rte_cryptodev_asym_capability_idx idx;
+	int status, overall_status = TEST_SUCCESS;
+	uint8_t dev_id = ts_params->valid_devs[0];
+	uint8_t i, tc = 0;
+	const char *msg;
+
+	/* Check EdDSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_EDDSA;
+	capa = rte_cryptodev_asym_capability_get(dev_id, &idx);
+	if (capa == NULL)
+		return TEST_SKIPPED;
+
+	/* Sign tests */
+	for (i = 0; i < RTE_DIM(eddsa_test_params); i++) {
+		memcpy(&input_params, &eddsa_test_params[i],
+				sizeof(input_params));
+		status = test_eddsa_sign(&input_params);
+		if (status == TEST_SUCCESS) {
+			msg = "succeeded";
+		} else {
+			msg = "failed";
+			overall_status = status;
+		}
+		printf("  %u) TestCase Sign %s  %s\n",
+		       tc++, input_params.description, msg);
+	}
+
+	/* Verify tests */
+	for (i = 0; i < RTE_DIM(eddsa_test_params); i++) {
+		memcpy(&input_params, &eddsa_test_params[i],
+				sizeof(input_params));
+		status = test_eddsa_verify(&input_params);
+		if (status == TEST_SUCCESS) {
+			msg = "succeeded";
+		} else {
+			msg = "failed";
+			overall_status = status;
+		}
+		printf("  %u) TestCase Verify %s  %s\n",
+		       tc++, input_params.description, msg);
+	}
+
+	/* Negative tests */
+	memcpy(&input_params, &eddsa_test_params[1],
+			sizeof(input_params));
+	input_params.pubkey.data[0] ^= 0x01;
+
+	status = test_eddsa_sign(&input_params);
+	if (status == TEST_FAILED) {
+		msg = "succeeded";
+	} else {
+		msg = "failed";
+		overall_status = status;
+	}
+	printf("  %u) TestCase Negative Sign %s  %s\n",
+			tc++, input_params.description, msg);
+
+	status = test_eddsa_verify(&input_params);
+	if (status == TEST_FAILED) {
+		msg = "succeeded";
+	} else {
+		msg = "failed";
+		overall_status = status;
+	}
+	printf("  %u) TestCase Negative Verify %s  %s\n",
+			tc++, input_params.description, msg);
+
+	return overall_status;
+}
 
 static int send_one(void)
 {
@@ -3323,7 +3701,6 @@ rsa_encrypt(const struct rsa_test_data_2 *vector, uint8_t *cipher_buf)
 	self->op->asym->rsa.cipher.data = cipher_buf;
 	self->op->asym->rsa.cipher.length = 0;
 	SET_RSA_PARAM(self->op->asym->rsa, vector, message);
-	self->op->asym->rsa.padding.type = vector->padding;
 
 	rte_crypto_op_attach_asym_session(self->op, self->sess);
 	TEST_ASSERT_SUCCESS(send_one(),
@@ -3347,7 +3724,6 @@ rsa_decrypt(const struct rsa_test_data_2 *vector, uint8_t *plaintext,
 	self->op->asym->rsa.message.data = plaintext;
 	self->op->asym->rsa.message.length = 0;
 	self->op->asym->rsa.op_type = RTE_CRYPTO_ASYM_OP_DECRYPT;
-	self->op->asym->rsa.padding.type = vector->padding;
 	rte_crypto_op_attach_asym_session(self->op, self->sess);
 	TEST_ASSERT_SUCCESS(send_one(),
 		"Failed to process crypto op (Decryption)");
@@ -3389,6 +3765,7 @@ kat_rsa_encrypt(const void *data)
 	SET_RSA_PARAM(xform.rsa, vector, n);
 	SET_RSA_PARAM(xform.rsa, vector, e);
 	SET_RSA_PARAM(xform.rsa, vector, d);
+	xform.rsa.padding.type = vector->padding;
 	xform.rsa.key_type = RTE_RSA_KEY_TYPE_EXP;
 	int ret = rsa_init_session(&xform);
 
@@ -3419,6 +3796,7 @@ kat_rsa_encrypt_crt(const void *data)
 	SET_RSA_PARAM_QT(xform.rsa, vector, dP);
 	SET_RSA_PARAM_QT(xform.rsa, vector, dQ);
 	SET_RSA_PARAM_QT(xform.rsa, vector, qInv);
+	xform.rsa.padding.type = vector->padding;
 	xform.rsa.key_type = RTE_RSA_KEY_TYPE_QT;
 	int ret = rsa_init_session(&xform);
 	if (ret) {
@@ -3444,6 +3822,7 @@ kat_rsa_decrypt(const void *data)
 	SET_RSA_PARAM(xform.rsa, vector, n);
 	SET_RSA_PARAM(xform.rsa, vector, e);
 	SET_RSA_PARAM(xform.rsa, vector, d);
+	xform.rsa.padding.type = vector->padding;
 	xform.rsa.key_type = RTE_RSA_KEY_TYPE_EXP;
 	int ret = rsa_init_session(&xform);
 
@@ -3474,6 +3853,7 @@ kat_rsa_decrypt_crt(const void *data)
 	SET_RSA_PARAM_QT(xform.rsa, vector, dP);
 	SET_RSA_PARAM_QT(xform.rsa, vector, dQ);
 	SET_RSA_PARAM_QT(xform.rsa, vector, qInv);
+	xform.rsa.padding.type = vector->padding;
 	xform.rsa.key_type = RTE_RSA_KEY_TYPE_QT;
 	int ret = rsa_init_session(&xform);
 	if (ret) {
@@ -3512,6 +3892,14 @@ static struct unit_test_suite cryptodev_openssl_asym_testsuite  = {
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_mod_inv),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_mod_exp),
 		TEST_CASE_NAMED_WITH_DATA(
+			"Modex test for zero padding",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_test_cases[0]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex test for zero padding (2)",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_test_cases[1]),
+		TEST_CASE_NAMED_WITH_DATA(
 			"Modex Group 5 test",
 			ut_setup_asym, ut_teardown_asym,
 			modular_exponentiation, &modex_group_test_cases[0]),
@@ -3535,6 +3923,7 @@ static struct unit_test_suite cryptodev_openssl_asym_testsuite  = {
 			"Modex Group 18 test",
 			ut_setup_asym, ut_teardown_asym,
 			modular_exponentiation, &modex_group_test_cases[5]),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_eddsa_sign_verify_all_curve),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -3585,7 +3974,18 @@ static struct unit_test_suite cryptodev_octeontx_asym_testsuite  = {
 				test_rsa_enc_dec_crt),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 				test_rsa_sign_verify_crt),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_rsa_enc_dec),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
+				test_rsa_sign_verify),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_mod_exp),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex test for zero padding",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_test_cases[0]),
+		TEST_CASE_NAMED_WITH_DATA(
+			"Modex test for zero padding (2)",
+			ut_setup_asym, ut_teardown_asym,
+			modular_exponentiation, &modex_test_cases[1]),
 		TEST_CASE_NAMED_WITH_DATA(
 			"Modex Group 5 test",
 			ut_setup_asym, ut_teardown_asym,
@@ -3618,6 +4018,20 @@ static struct unit_test_suite cryptodev_octeontx_asym_testsuite  = {
 				test_ecdh_all_curve),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 				test_ecpm_all_curve),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_eddsa_sign_verify_all_curve),
+		TEST_CASES_END() /**< NULL terminate unit test array */
+	}
+};
+
+static struct unit_test_suite cryptodev_virtio_asym_testsuite  = {
+	.suite_name = "Crypto Device VIRTIO ASYM Unit Test Suite",
+	.setup = testsuite_setup,
+	.teardown = testsuite_teardown,
+	.unit_test_cases = {
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_capability),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
+				test_rsa_sign_verify_crt),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_rsa_enc_dec_crt),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -3690,8 +4104,38 @@ test_cryptodev_cn10k_asym(void)
 	return unit_test_suite_runner(&cryptodev_octeontx_asym_testsuite);
 }
 
+static int
+test_cryptodev_virtio_asym(void)
+{
+	gbl_driver_id = rte_cryptodev_driver_id_get(
+			RTE_STR(CRYPTODEV_NAME_VIRTIO_PMD));
+	if (gbl_driver_id == -1) {
+		RTE_LOG(ERR, USER1, "virtio PMD must be loaded.\n");
+		return TEST_SKIPPED;
+	}
+
+	/* Use test suite registered for crypto_virtio PMD */
+	return unit_test_suite_runner(&cryptodev_virtio_asym_testsuite);
+}
+
+static int
+test_cryptodev_virtio_user_asym(void)
+{
+	gbl_driver_id = rte_cryptodev_driver_id_get(
+			RTE_STR(CRYPTODEV_NAME_VIRTIO_USER_PMD));
+	if (gbl_driver_id == -1) {
+		RTE_LOG(ERR, USER1, "virtio user PMD must be loaded.\n");
+		return TEST_SKIPPED;
+	}
+
+	/* Use test suite registered for crypto_virtio_user PMD */
+	return unit_test_suite_runner(&cryptodev_virtio_asym_testsuite);
+}
+
 REGISTER_DRIVER_TEST(cryptodev_openssl_asym_autotest, test_cryptodev_openssl_asym);
 REGISTER_DRIVER_TEST(cryptodev_qat_asym_autotest, test_cryptodev_qat_asym);
 REGISTER_DRIVER_TEST(cryptodev_octeontx_asym_autotest, test_cryptodev_octeontx_asym);
 REGISTER_DRIVER_TEST(cryptodev_cn9k_asym_autotest, test_cryptodev_cn9k_asym);
 REGISTER_DRIVER_TEST(cryptodev_cn10k_asym_autotest, test_cryptodev_cn10k_asym);
+REGISTER_DRIVER_TEST(cryptodev_virtio_asym_autotest, test_cryptodev_virtio_asym);
+REGISTER_DRIVER_TEST(cryptodev_virtio_user_asym_autotest, test_cryptodev_virtio_user_asym);

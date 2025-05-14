@@ -1,6 +1,12 @@
 # ignore hidden files
 .*
-
+# except the tracked ones and derivatives
+!.ci/
+!.github/
+!.gitignore*
+!.mailmap*
+# Bazel symlinks
+bazel-*
 # ignore generated documentation tables
 doc/guides/nics/overview_table.txt
 doc/guides/nics/rte_flow_actions_table.txt
@@ -36,11 +42,10 @@ TAGS
 # ignore python bytecode files
 *.pyc
 
-# ignore BPF programs
-drivers/net/tap/bpf/tap_bpf_program.o
-
 # DTS results
 dts/output
+dts/nodes.yaml
+dts/test_run.yaml
 
 # ignore default build directory, and directories from test-meson-builds.sh
 build

@@ -4,11 +4,14 @@
 #include <string.h>
 #include <stdint.h>
 
+#include <eal_export.h>
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
 
 #include "rte_port_ethdev.h"
+
+#include "port_log.h"
 
 /*
  * Port ETHDEV Reader
@@ -43,7 +46,7 @@ rte_port_ethdev_reader_create(void *params, int socket_id)
 
 	/* Check input parameters */
 	if (conf == NULL) {
-		RTE_LOG(ERR, PORT, "%s: params is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: params is NULL", __func__);
 		return NULL;
 	}
 
@@ -51,7 +54,7 @@ rte_port_ethdev_reader_create(void *params, int socket_id)
 	port = rte_zmalloc_socket("PORT", sizeof(*port),
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Failed to allocate port\n", __func__);
+		PORT_LOG(ERR, "%s: Failed to allocate port", __func__);
 		return NULL;
 	}
 
@@ -78,7 +81,7 @@ static int
 rte_port_ethdev_reader_free(void *port)
 {
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: port is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: port is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -142,7 +145,7 @@ rte_port_ethdev_writer_create(void *params, int socket_id)
 		(conf->tx_burst_sz == 0) ||
 		(conf->tx_burst_sz > RTE_PORT_IN_BURST_SIZE_MAX) ||
 		(!rte_is_power_of_2(conf->tx_burst_sz))) {
-		RTE_LOG(ERR, PORT, "%s: Invalid input parameters\n", __func__);
+		PORT_LOG(ERR, "%s: Invalid input parameters", __func__);
 		return NULL;
 	}
 
@@ -150,7 +153,7 @@ rte_port_ethdev_writer_create(void *params, int socket_id)
 	port = rte_zmalloc_socket("PORT", sizeof(*port),
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Failed to allocate port\n", __func__);
+		PORT_LOG(ERR, "%s: Failed to allocate port", __func__);
 		return NULL;
 	}
 
@@ -257,7 +260,7 @@ static int
 rte_port_ethdev_writer_free(void *port)
 {
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Port is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: Port is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -323,7 +326,7 @@ rte_port_ethdev_writer_nodrop_create(void *params, int socket_id)
 		(conf->tx_burst_sz == 0) ||
 		(conf->tx_burst_sz > RTE_PORT_IN_BURST_SIZE_MAX) ||
 		(!rte_is_power_of_2(conf->tx_burst_sz))) {
-		RTE_LOG(ERR, PORT, "%s: Invalid input parameters\n", __func__);
+		PORT_LOG(ERR, "%s: Invalid input parameters", __func__);
 		return NULL;
 	}
 
@@ -331,7 +334,7 @@ rte_port_ethdev_writer_nodrop_create(void *params, int socket_id)
 	port = rte_zmalloc_socket("PORT", sizeof(*port),
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Failed to allocate port\n", __func__);
+		PORT_LOG(ERR, "%s: Failed to allocate port", __func__);
 		return NULL;
 	}
 
@@ -470,7 +473,7 @@ static int
 rte_port_ethdev_writer_nodrop_free(void *port)
 {
 	if (port == NULL) {
-		RTE_LOG(ERR, PORT, "%s: Port is NULL\n", __func__);
+		PORT_LOG(ERR, "%s: Port is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -498,6 +501,7 @@ static int rte_port_ethdev_writer_nodrop_stats_read(void *port,
 /*
  * Summary of port operations
  */
+RTE_EXPORT_SYMBOL(rte_port_ethdev_reader_ops)
 struct rte_port_in_ops rte_port_ethdev_reader_ops = {
 	.f_create = rte_port_ethdev_reader_create,
 	.f_free = rte_port_ethdev_reader_free,
@@ -505,6 +509,7 @@ struct rte_port_in_ops rte_port_ethdev_reader_ops = {
 	.f_stats = rte_port_ethdev_reader_stats_read,
 };
 
+RTE_EXPORT_SYMBOL(rte_port_ethdev_writer_ops)
 struct rte_port_out_ops rte_port_ethdev_writer_ops = {
 	.f_create = rte_port_ethdev_writer_create,
 	.f_free = rte_port_ethdev_writer_free,
@@ -514,6 +519,7 @@ struct rte_port_out_ops rte_port_ethdev_writer_ops = {
 	.f_stats = rte_port_ethdev_writer_stats_read,
 };
 
+RTE_EXPORT_SYMBOL(rte_port_ethdev_writer_nodrop_ops)
 struct rte_port_out_ops rte_port_ethdev_writer_nodrop_ops = {
 	.f_create = rte_port_ethdev_writer_nodrop_create,
 	.f_free = rte_port_ethdev_writer_nodrop_free,
